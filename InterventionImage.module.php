@@ -101,7 +101,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     public function init(): void
     {
-        foreach (['delayed', 'upscale', 'avifAdd', 'webpAdd'] as $key) {
+        foreach (['delayed', 'lqip', 'lazyload', 'inlineLazyload', 'upscale', 'avifAdd', 'webpAdd'] as $key) {
             $this->set($key, in_array($key, $this->options));
         }
 
@@ -109,10 +109,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $this->setupImageOptions();
         $this->parseAndSetupConfigs();
 
-        if ($this->assets) {
-            $this->addHookBefore('Pageimage::render', function (HookEvent $event) {
+        if ($this->inlineLazyload) {
+            $this->addHookAfter('Page::render', function (HookEvent $event) {
                 $event->replace = true;
-                $event->return = str_replace('</head>', $this->getLQIPAssets() . '</head>', $event->return);
+                $event->return = str_replace('</head>', $this->inlineLazyload() . '</head>', $event->return);
             });
         }
 
@@ -132,7 +132,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $this->addHookBefore('ProcessPageView::pageNotFound', $this, 'handlePageNotFound', ['priority' => 100]);
     }
 
-    protected function getLQIPAssets(): string
+    protected function inlineLazyload(): string
     {
         $output = <<<HTML
         <style>
