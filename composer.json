@@ -1,0 +1,38 @@
+{
+  "name": "trk/intervention-image",
+  "description": "",
+  "type": "pw-module",
+  "keywords": [
+    "totoglu",
+    "wire",
+    "intervention",
+    "image"
+  ],
+  "homepage": "https://github.com/trk/Htmx",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Iskender TOTOGLU",
+      "email": "iskender@totoglu.com",
+      "homepage": "https://totoglu.com/"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "Totoglu\\Image\\": [
+        "src"
+      ]
+    }
+  },
+  "require": {
+    "php": ">=8.1",
+    "intervention/image": "^3.11"
+  },
+  "config": {
+    "process-timeout": 0,
+    "allow-plugins": {
+      "hari/pw-module": true
+    }
+  },
+  "minimum-stability": "dev"
+}

@@ -1,0 +1,15 @@
+img.lazyload {
+  color: transparent;
+}
+img.lazyload.loaded {
+  animation: lazyFadeIn 0.5s ease-in-out;
+}
+
+@keyframes lazyFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
