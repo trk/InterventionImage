@@ -35,6 +35,8 @@ if (!class_exists('Intervention\Image\ImageManager')) require __DIR__ . "/vendor
  */
 class InterventionImage extends WireData implements Module, ConfigurableModule
 {
+    const VERSION = '0.0.2';
+
     /** @var ImageManager Intervention image manager instance */
     protected ImageManager $intervention;
 
@@ -76,7 +78,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         return [
             'title' => __('Intervention Image Engine'),
-            'version' => 1,
+            'version' => self::VERSION,
             'summary' => __('Replaces PW sizing with Intervention Image + Delayed Rendering using ImageManager logic.'),
             'author' => 'Iskender TOTOGLU @trk @ukyo',
             'href' => 'https://github.com/trk/InterventionImage',
