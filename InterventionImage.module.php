@@ -1258,7 +1258,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f = $modules->get('InputfieldTextarea');
         $f->name = 'breakpoints';
         $f->label = __('Breakpoints');
-        $f->description = __('Comma-separated list of breakpoints for responsive images.');
+        $f->description = __('Add breakpoints for responsive images. One per line.');
         $f->value = $this->breakpoints ?: $this->defaults['breakpoints'];
         $f->notes = __('Breakpoints should be in the format `value=key|Label`. For set default breakpoint `value=+key|Label` format.');
         $f->columnWidth = 50;
@@ -1267,7 +1267,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f = $modules->get('InputfieldTextarea');
         $f->name = 'aspectRatios';
         $f->label = __('Aspect Ratios');
-        $f->description = __('Comma-separated list of aspect ratios for responsive images.');
+        $f->description = __('Add aspect ratios for responsive images. One per line.');
         $f->notes = __('Aspect ratios should be in the format `width:height=key|Label`. For set default aspect ratio `width:height=+key|Label` format.');
         $f->value = $this->aspectRatios ?: $this->defaults['aspectRatios'];
         $f->columnWidth = 50;
