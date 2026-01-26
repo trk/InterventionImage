@@ -417,6 +417,35 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $width = (int) round($height / ($image->height / $image->width));
         }
 
+        if (!empty($options['insert'])) {
+
+            if ($options['insert'] instanceof Pageimage) {
+                $options['insert'] = [
+                    'element' => $options['insert']->filename
+                ];
+            } elseif (is_string($options['insert']) && is_file($options['insert'])) {
+                $options['insert'] = [
+                    'element' => $options['insert']
+                ];
+            }
+
+            if (!is_array($options['insert'])) $options['insert'] = [];
+
+            $options['insert'] = array_merge([
+                'element' => null,
+                'position' => 'top-left',
+                'offset_x' => 0,
+                'offset_y' => 0,
+                'opacity' => 100
+            ], $options['insert']);
+
+            if (!file_exists($options['insert']['element'])) $options['insert']['element'] = null;
+
+            if (!is_int($options['insert']['offset_x'])) $options['insert']['offset_x'] = 0;
+            if (!is_int($options['insert']['offset_y'])) $options['insert']['offset_y'] = 0;
+            if (!is_int($options['insert']['opacity'])) $options['insert']['opacity'] = 100;
+        }
+
         $options = array_merge($this->imageSizeOptions, $options);
 
         return [
@@ -940,6 +969,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!empty($options['invert'])) $image->invert();
         if (!empty($options['pixelate'])) $image->pixelate((int) $options['pixelate']);
 
+        // Insert Images
+        if (!empty($options['insert'])) $image->place(...$options['insert']);
+
         $baseQuality = $options['quality'] ?? 90;
 
         if (str_ends_with($destination, '.webp')) {
@@ -1046,6 +1078,24 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $parts[] = $sanitizer->fieldName($options['cropping']);
         }
 
+        // insert
+        if (isset($options['insert']) && $options['insert']['element']) {
+            $insert = md5($options['insert']['element']);
+            $pos = [
+                'top-left' => 'tl',
+                'top' => 't',
+                'top-right' => 'tr',
+                'left' => 'l',
+                'center' => 'c',
+                'right' => 'r',
+                'bottom-left' => 'bl',
+                'bottom' => 'b',
+                'bottom-right' => 'br',
+            ][$options['insert']['position']] ?? 'tl';
+
+            $parts[] = "ins{$insert}_{$pos}_{$options['insert']['offset_x']}x{$options['insert']['offset_y']}_{$options['insert']['opacity']}";
+        }
+
         // Gamma (e.g. -gam10)
         if (!empty($options['gamma'])) $parts[] = 'gam' . (float) $options['gamma'];
 
@@ -1088,7 +1138,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!empty($options['invert'])) $parts[] = 'inv';
 
         // Pixelate (e.g. -pix10)
-        if (!empty($options['pixelate'])) $parts[] = 'pixelate' . (int) $options['pixelate'];
+        if (!empty($options['pixelate'])) $parts[] = 'pix' . (int) $options['pixelate'];
 
         return '.' . $width . 'x' . $height . (!empty($parts) ? '-' . implode('-', $parts) : '');
     }
