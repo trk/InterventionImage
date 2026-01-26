@@ -35,7 +35,7 @@ if (!class_exists('Intervention\Image\ImageManager')) require __DIR__ . "/vendor
  */
 class InterventionImage extends WireData implements Module, ConfigurableModule
 {
-    const VERSION = '0.0.2';
+    const VERSION = '0.0.3';
 
     /** @var ImageManager Intervention image manager instance */
     protected ImageManager $intervention;
