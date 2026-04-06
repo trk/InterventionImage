@@ -6,7 +6,6 @@ $vendorDir = dirname(__DIR__);
 $baseDir = dirname($vendorDir);
 
 return array(
-    'Totoglu\\Image\\' => array($baseDir . '/src'),
     'Intervention\\Image\\' => array($vendorDir . '/intervention/image/src'),
     'Intervention\\Gif\\' => array($vendorDir . '/intervention/gif/src'),
 );

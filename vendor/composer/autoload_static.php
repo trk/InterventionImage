@@ -7,10 +7,6 @@ namespace Composer\Autoload;
 class ComposerStaticInit2aac4db7a507a7841f7f8c2b193a2b06
 {
     public static $prefixLengthsPsr4 = array (
-        'T' =>
-        array (
-            'Totoglu\\Image\\' => 14,
-        ),
         'I' =>
         array (
             'Intervention\\Image\\' => 19,
@@ -19,10 +15,6 @@ class ComposerStaticInit2aac4db7a507a7841f7f8c2b193a2b06
     );
 
     public static $prefixDirsPsr4 = array (
-        'Totoglu\\Image\\' =>
-        array (
-            0 => __DIR__ . '/../..' . '/src',
-        ),
         'Intervention\\Image\\' =>
         array (
             0 => __DIR__ . '/..' . '/intervention/image/src',
