@@ -35,8 +35,6 @@ if (!class_exists('Intervention\Image\ImageManager')) require __DIR__ . "/vendor
  */
 class InterventionImage extends WireData implements Module, ConfigurableModule
 {
-    const VERSION = '0.0.3';
-
     /** @var ImageManager Intervention image manager instance */
     protected ImageManager $intervention;
 
@@ -78,7 +76,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         return [
             'title' => __('Intervention Image Engine'),
-            'version' => self::VERSION,
+            'version' => 4,
             'summary' => __('Replaces PW sizing with Intervention Image + Delayed Rendering using ImageManager logic.'),
             'author' => 'Iskender TOTOGLU @trk @ukyo',
             'href' => 'https://github.com/trk/InterventionImage',
@@ -184,7 +182,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $driver = null;
 
         if ($selectedDriver === 'imagick') {
-            if (extension_loaded('imagick') && class_exists('\Imagick::class')) {
+            if (extension_loaded('imagick') && class_exists('Imagick')) {
                 $driver = new ImagickDriver();
             }
         } elseif ($selectedDriver === 'gd') {
@@ -196,7 +194,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!$driver) {
             if (extension_loaded('gd')) {
                 $driver = new GdDriver();
-            } elseif (extension_loaded('imagick') && class_exists('\Imagick::class')) {
+            } elseif (extension_loaded('imagick') && class_exists('Imagick')) {
                 $driver = new ImagickDriver();
             }
         }
@@ -333,10 +331,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     public function calculate(?int $width, ?int $height, ?string $ratioKey = null, ?string $breakpointKey = null): array
     {
-        $breakpoint = $this->formatted['breakpoints'][$breakpointKey] ?? $this->formatted['breakpoint'];
+        $breakpoint = $this->formatted['breakpoints'][(string)$breakpointKey] ?? $this->formatted['breakpoint'];
         $maxWidth = $breakpoint['value'] ?? 1200;
 
-        $aspectRatio = $this->formatted['aspectRatios'][$ratioKey] ?? $this->formatted['aspectRatio'];
+        $aspectRatio = $this->formatted['aspectRatios'][(string)$ratioKey] ?? $this->formatted['aspectRatio'];
 
         // Default to 1:1 only if we are strictly calculating a ratio-based dimension
         // otherwise default to flexible
@@ -401,7 +399,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         if (!is_int($height)) $height = 0;
 
-        if (is_string($width) && isset($config->imageSizes[$width])) {
+        if (is_string($width) && !empty($config->imageSizes[$width])) {
             $size = $config->imageSizes[$width];
             $width = $size['width'] ?? 0;
             $height = ($height === 0) ? ($size['height'] ?? 0) : $height;
@@ -842,6 +840,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                     ->pixelate(6)
                     ->toWebp(20)->save($lqipPath);
             } catch (\Exception $e) {
+                if ($this->wire()->config->debug) {
+                    $this->wire()->log->error("InterventionImage LQIP Error: " . $e->getMessage());
+                }
                 return '';
             }
         }
@@ -970,7 +971,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!empty($options['pixelate'])) $image->pixelate((int) $options['pixelate']);
 
         // Insert Images
-        if (!empty($options['insert'])) $image->place(...$options['insert']);
+        if (!empty($options['insert']) && $options['insert']['element']) $image->place(...$options['insert']);
 
         $baseQuality = $options['quality'] ?? 90;
 
@@ -1079,7 +1080,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         // insert
-        if (isset($options['insert']) && $options['insert']['element']) {
+        if (!empty($options['insert']) && $options['insert']['element']) {
             $insert = md5($options['insert']['element']);
             $pos = [
                 'top-left' => 'tl',
@@ -1244,11 +1245,14 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     public function getModuleConfigInputfields(InputfieldWrapper $inputfields)
     {
         $modules = $this->wire()->modules;
+
+        /** @var InputfieldFieldset $fs */
         $fs = $modules->get('InputfieldFieldset');
         $fs->name = 'intervention';
         $fs->label = __('Settings');
         $inputfields->add($fs);
 
+        /** @var InputfieldRadios $f */
         $f = $modules->get('InputfieldRadios');
         $f->name = 'driver';
         $f->label = __('Image Processing Driver');
@@ -1261,6 +1265,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f->columnWidth = 50;
         $fs->add($f);
 
+        /** @var InputfieldCheckboxes $f */
         $f = $modules->get('InputfieldCheckboxes');
         $f->name = 'options';
         $f->label = __('Options');
@@ -1278,6 +1283,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f->columnWidth = 50;
         $fs->add($f);
 
+        /** @var InputfieldInteger $f */
         $f = $modules->get('InputfieldInteger');
         $f->name = 'quality';
         $f->label = __('Default Quality');
@@ -1291,6 +1297,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f->columnWidth = 50;
         $fs->add($f);
 
+        /** @var InputfieldSelect $f */
         $f = $modules->get('InputfieldSelect');
         $f->name = 'outputFormat';
         $f->label = __('Default Output Format');
@@ -1305,6 +1312,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f->columnWidth = 50;
         $fs->add($f);
 
+        /** @var InputfieldTextarea $f */
         $f = $modules->get('InputfieldTextarea');
         $f->name = 'breakpoints';
         $f->label = __('Breakpoints');
@@ -1314,6 +1322,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f->columnWidth = 50;
         $fs->add($f);
 
+        /** @var InputfieldTextarea $f */
         $f = $modules->get('InputfieldTextarea');
         $f->name = 'aspectRatios';
         $f->label = __('Aspect Ratios');
@@ -1323,6 +1332,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f->columnWidth = 50;
         $fs->add($f);
 
+        /** @var InputfieldText $f */
         $f = $modules->get('InputfieldText');
         $f->name = 'columnWidths';
         $f->label = __('Grid Columns');
@@ -1331,6 +1341,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $f->columnWidth = 50;
         $fs->add($f);
 
+        /** @var InputfieldText $f */
         $f = $modules->get('InputfieldText');
         $f->name = 'factors';
         $f->label = __('Responsive image resizing factors');

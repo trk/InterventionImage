@@ -77,6 +77,38 @@ echo $page->image->render('landscape', [
 ]);
 ```
 
+### Advanced Image Options
+
+You can pass several other image manipulation options during generation:
+
+```php
+echo $page->image->render('landscape', [
+    'blur' => 10,                 // Apply gaussian blur
+    'pixelate' => 5,              // Pixelate the image
+    'brightness' => 15,           // Adjust brightness
+    'contrast' => 10,             // Adjust contrast
+    'colorize' => '255, 0, 0',    // Or as array [255, 0, 0] / ['red' => 255]
+    'greyscale' => true,          // Convert to grayscale
+    'invert' => true,             // Invert colors
+]);
+```
+
+### Watermark (Insert) Feature
+
+You can add a watermark or insert another image on top of the rendered image:
+
+```php
+echo $page->image->render('landscape', [
+    'insert' => [
+        'element' => '/path/to/watermark.png', // Absolute path or Pageimage object
+        'position' => 'bottom-right',          // Alignment (e.g. top-left, center, bottom-right)
+        'offset_x' => 15,                      // X axis offset
+        'offset_y' => 15,                      // Y axis offset
+        'opacity' => 50                        // Opacity level (0-100)
+    ]
+]);
+```
+
 ### 4. Delayed Rendering Logic
 
 When you request an image size, the module:
