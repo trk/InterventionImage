@@ -76,7 +76,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         return [
             'title' => __('Intervention Image Engine'),
-            'version' => 5,
+            'version' => 6,
             'summary' => __('Replaces PW sizing with Intervention Image + Delayed Rendering using ImageManager logic.'),
             'author' => 'Iskender TOTOGLU @trk @ukyo',
             'href' => 'https://github.com/trk/InterventionImage',
@@ -446,6 +446,14 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         $options = array_merge($this->imageSizeOptions, $options);
 
+        if ($image->hasFocus && (empty($options['focus']) || !is_array($options['focus']))) {
+            $focus = $image->focus();
+            $options['focus'] = [
+                $focus['top'],
+                $focus['left']
+            ];
+        }
+
         return [
             'width' => $width,
             'height' => $height,
@@ -492,6 +500,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     public function hookCrop(HookEvent $event)
     {
+        if ($this->wire()->config->admin) return;
+
         /** @var Pageimage $image */
         $image = $event->object;
 
