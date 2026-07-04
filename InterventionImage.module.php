@@ -76,7 +76,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         return [
             'title' => __('Intervention Image Engine'),
-            'version' => 6,
+            'version' => 7,
             'summary' => __('Replaces PW sizing with Intervention Image + Delayed Rendering using ImageManager logic.'),
             'author' => 'Iskender TOTOGLU @trk @ukyo',
             'href' => 'https://github.com/trk/InterventionImage',
@@ -550,7 +550,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                 $source = $image->getOriginal() ?: $image;
                 $this->createQueue($source, $path, $params);
             } else {
-                return $this->create($image, $path, $width, $height, $options);
+                $this->create($image, $path, $width, $height, $options);
             }
         }
 
@@ -928,17 +928,32 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
 
             if ($isCover) {
-                if (in_array('upscale', $this->options)) {
+                $upscale = !empty($options['upscaling']) || in_array('upscale', $this->options);
+                if ($upscale) {
                     $image->cover($width, $height, $align);
                 } else {
                     if ($width > $image->width() || $height > $image->height()) {
-                        $image->scaleDown($width, $height);
+                        // Calculate maximum crop dimensions that fit the target aspect ratio inside the original image
+                        $targetRatio = $width / $height;
+                        $origRatio = $image->width() / $image->height();
+
+                        if ($origRatio >= $targetRatio) {
+                            // Original is wider: limit by height
+                            $cropH = $image->height();
+                            $cropW = (int) round($cropH * $targetRatio);
+                        } else {
+                            // Original is narrower: limit by width
+                            $cropW = $image->width();
+                            $cropH = (int) round($cropW / $targetRatio);
+                        }
+                        $image->cover($cropW, $cropH, $align);
                     } else {
                         $image->cover($width, $height, $align);
                     }
                 }
             } else {
-                if (in_array('upscale', $this->options)) {
+                $upscale = !empty($options['upscaling']) || in_array('upscale', $this->options);
+                if ($upscale) {
                     $image->scale($width ?: null, $height ?: null);
                 } else {
                     $image->scaleDown($width ?: null, $height ?: null);
