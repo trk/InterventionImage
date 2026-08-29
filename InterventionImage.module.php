@@ -76,7 +76,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         return [
             'title' => __('Intervention Image Engine'),
-            'version' => 7,
+            'version' => 8,
             'summary' => __('Replaces PW sizing with Intervention Image + Delayed Rendering using ImageManager logic.'),
             'author' => 'Iskender TOTOGLU @trk @ukyo',
             'href' => 'https://github.com/trk/InterventionImage',
@@ -259,7 +259,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         foreach ($aspectRatios['data'] as $key => $ratio) {
             foreach ($columnWidths as $columnWidth) {
-                list($n, $d) = explode('-', $columnWidth);
+                [$n, $d] = explode('-', $columnWidth);
                 $width = (int) ceil($breakpoints['default']['value'] * ($n / $d));
 
                 $dimensions = $this->calculate($width, null, $key);
@@ -287,9 +287,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $conf = ['value' => null, 'key' => null, 'label' => null];
 
             if (str_contains($line, '=')) {
-                list($conf['value'], $rest) = explode('=', $line);
+                [$conf['value'], $rest] = array_pad(explode('=', $line, 2), 2, '');
                 if (str_contains($rest, '|')) {
-                    list($conf['key'], $conf['label']) = explode('|', $rest);
+                    [$conf['key'], $conf['label']] = array_pad(explode('|', $rest, 2), 2, '');
                 } else {
                     $conf['key'] = $rest;
                     $conf['label'] = $rest;
@@ -410,9 +410,13 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!is_int($width)) $width = 0;
 
         if ($width > 0 && $height === 0) {
-            $height = (int) round($width * ($image->height / $image->width));
+            $iw = max(1, $image->width);
+            $ih = max(1, $image->height);
+            $height = (int) round($width * ($ih / $iw));
         } elseif ($height > 0 && $width === 0) {
-            $width = (int) round($height / ($image->height / $image->width));
+            $iw = max(1, $image->width);
+            $ih = max(1, $image->height);
+            $width = (int) round($height / ($ih / $iw));
         }
 
         if (!empty($options['insert'])) {
@@ -532,7 +536,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $config = $this->wire()->config;
         $image = $event->object;
 
-        if ($image->ext === 'svg') {
+        if (strcasecmp($image->ext, 'svg') === 0 || $image->mime() === 'image/svg+xml') {
             $event->return = $image;
             return;
         }
@@ -663,7 +667,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         $sources = [];
         // AVIF Source
-        if (in_array('avifAdd', $this->options) && $source->ext !== 'avif') {
+        if ($this->avifAdd && $source->ext !== 'avif') {
             $sources[] = [
                 'type' => 'image/avif',
                 'srcset' => $image->srcset(null, array_merge($srcsetOptions, ['format' => 'avif']))
@@ -671,7 +675,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         // WebP Source
-        if (in_array('webpAdd', $this->options) && $source->ext !== 'webp') {
+        if ($this->webpAdd && $source->ext !== 'webp') {
             $webpSrcset = $image->srcset(null, array_merge($srcsetOptions, ['format' => 'webp']));
             $sources[] = [
                 'type' => 'image/webp',
@@ -831,16 +835,28 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     /**
      * Hook: Deletes variation files when original image is deleted
      * 
-     * @param HookEvent $event
+     * @param HookEvent $e
      */
     public function hookDeleteVariations(HookEvent $e)
     {
         if (!$e->object instanceof Pageimage) return;
         $pi = pathinfo($e->object->filename);
-        $files = glob($pi['dirname'] . '/' . $pi['filename'] . '.*');
-        if ($files) {
-            foreach ($files as $f) {
-                if ($f !== $e->object->filename) @unlink($f);
+        $prefix = $pi['filename'] . '.';
+        $dir = $pi['dirname'];
+
+        if (!is_dir($dir)) return;
+
+        try {
+            $it = new \FilesystemIterator($dir, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::CURRENT_AS_PATHNAME);
+            foreach ($it as $path) {
+                $base = basename($path);
+                if (str_starts_with($base, $prefix) && $path !== $e->object->filename) {
+                    $this->wire()->files->unlink($path);
+                }
+            }
+        } catch (\Exception $ex) {
+            if ($this->wire()->config->debug) {
+                $this->wire()->log->warning("InterventionImage variation delete warning: " . $ex->getMessage());
             }
         }
     }
@@ -890,7 +906,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * 
      * @return Pageimage|EncodedImage Returns Pageimage for hooks, EncodedImage for direct output
      */
-    protected function create($source, string $destination, int $width = 0, int $height = 0, array $options = [])
+    protected function create(Pageimage|string $source, string $destination, int $width = 0, int $height = 0, array $options = []): Pageimage|EncodedImage
     {
         $filename = ($source instanceof Pageimage) ? $source->filename : $source;
 
@@ -1164,14 +1180,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         // Flop (e.g. -flop)
         if (!empty($options['flop'])) $parts[] = 'flop';
 
-        // Flip (e.g. -flip)
-        // if (!empty($options['flip'])) $parts[] = 'flip';
-
         // Blur (e.g. -blu10)
         if (!empty($options['blur'])) $parts[] = 'blu' . (int) $options['blur'];
-
-        // Rotate (e.g. -rot10)
-        // if (!empty($options['rotate'])) $parts[] = 'rot' . (int) $options['rotate'];
 
         // Sharpen (e.g. -sha10)
         if (!empty($options['sharpen'])) $parts[] = 'sha' . (int) $options['sharpen'];
