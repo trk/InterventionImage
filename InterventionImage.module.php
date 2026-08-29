@@ -679,7 +679,14 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             ];
         }
 
-        $lazyload = isset($options['loading']) && is_bool($options['loading']) && $options['loading'] === true ? false : true;
+        $loading = $options['loading'] ?? null;
+        if (is_bool($loading)) {
+            $lazyload = $loading;
+        } elseif (is_string($loading)) {
+            $lazyload = strtolower($loading) !== 'eager';
+        } else {
+            $lazyload = true;
+        }
         $first = !empty($options['isFirst']);
 
         $attrs = [
@@ -802,13 +809,19 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $files->unlink($destination . '.queue');
 
             $mime = $encoded->mimetype();
-            $size = strlen((string)$encoded);
+            $body = (string)$encoded;
+            $size = strlen($body);
 
-            header("Content-Type: $mime");
-            header("Content-Length: $size");
-            header("Cache-Control: public, max-age=31536000");
+            if (!headers_sent()) {
+                header("Content-Type: $mime");
+                header("Content-Length: $size");
+                header("Cache-Control: public, max-age=31536000, immutable");
+            }
 
-            echo $encoded;
+            echo $body;
+            if (function_exists('session_write_close')) {
+                session_write_close();
+            }
             exit;
         } catch (\Exception $e) {
             $this->wire()->log->error("InterventionImage Error: " . $e->getMessage());
@@ -889,7 +902,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         // 1. Transformations (Rotate/Flip/Flop)
         if (!empty($options['rotate'])) $image->rotate((int) $options['rotate']);
-        if (!empty($options['flip'])) str_starts_with($options['flip'], 'v') ? $image->flip() : $image->flop();
+        if (!empty($options['flip'])) is_string($options['flip']) && str_starts_with($options['flip'], 'v') ? $image->flip() : $image->flop();
 
         // 2. Resize / Crop Logic
         $cropping = $options['cropping'] ?? true;
@@ -986,10 +999,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
         }
 
-        if (!empty($options['grayscale'])) $image->greyscale();
-        // if (!empty($options['flop'])) $image->flop();
-        // if (!empty($options['flip'])) $image->flip();
-        // if (!empty($options['rotate'])) $image->rotate((int) $options['rotate']);
+        if (!empty($options['grayscale']) || !empty($options['greyscale'])) $image->greyscale();
+        if (!empty($options['flop'])) $image->flop();
         if (!empty($options['blur'])) $image->blur((int) $options['blur']);
         if (!empty($options['sharpen'])) $image->sharpen((int) $options['sharpen']);
         if (!empty($options['invert'])) $image->invert();
@@ -1139,9 +1150,6 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         // Contrast (e.g. -con10)
         if (!empty($options['contrast'])) $parts[] = 'con' . (float) $options['contrast'];
 
-        // Gamma (e.g. -gam10)
-        if (!empty($options['gamma'])) $parts[] = 'gam' . (float) $options['gamma'];
-
         // Colorize (e.g. -col10-0-0)
         if (!empty($options['colorize'])) {
             [$cr, $cg, $cb] = $this->normalizeColorize($options['colorize']);
@@ -1151,7 +1159,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         // Greyscale (e.g. -gr)
-        if (!empty($options['greyscale'])) $parts[] = 'gre';
+        if (!empty($options['greyscale']) || !empty($options['grayscale'])) $parts[] = 'gre';
 
         // Flop (e.g. -flop)
         if (!empty($options['flop'])) $parts[] = 'flop';
