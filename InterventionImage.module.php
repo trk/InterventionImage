@@ -859,7 +859,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         if (file_exists($lqipPath)) {
             $data = file_get_contents($lqipPath);
-            return 'data:image/jpeg;base64,' . base64_encode($data);
+            return 'data:image/webp;base64,' . base64_encode($data);
         }
 
         return '';
@@ -996,7 +996,15 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!empty($options['pixelate'])) $image->pixelate((int) $options['pixelate']);
 
         // Insert Images
-        if (!empty($options['insert']) && $options['insert']['element']) $image->place(...$options['insert']);
+        if (!empty($options['insert']) && $options['insert']['element']) {
+            $image->place(
+                $options['insert']['element'],
+                $options['insert']['position'],
+                (int)$options['insert']['offset_x'],
+                (int)$options['insert']['offset_y'],
+                (int)$options['insert']['opacity']
+            );
+        }
 
         $baseQuality = $options['quality'] ?? 90;
 
