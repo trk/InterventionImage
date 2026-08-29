@@ -557,7 +557,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $event->return = $image;
             return;
         }
-        $imageMime = is_callable([$image, 'mime']) ? $image->mime() : ($image->mime ?? @mime_content_type($image->filename) ?: '');
+        $imageMime = function_exists('mime_content_type') && file_exists($image->filename)
+            ? @mime_content_type($image->filename)
+            : '';
         if ($imageMime === 'image/svg+xml') {
             $event->return = $image;
             return;
