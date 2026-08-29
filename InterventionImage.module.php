@@ -104,8 +104,17 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     public function init(): void
     {
-        foreach (['delayed', 'lqip', 'lazyload', 'inlineLazyload', 'upscale', 'avifAdd', 'webpAdd'] as $key) {
-            $this->set($key, in_array($key, $this->options));
+        $map = [
+            'delayed' => 'delayed',
+            'lqip' => 'lqip',
+            'lazyload' => 'lazyload',
+            'inlineLazyload' => 'inlineLazyload',
+            'upscale' => 'upscaling',
+            'avifAdd' => 'avifAdd',
+            'webpAdd' => 'webpAdd',
+        ];
+        foreach ($map as $opt => $internal) {
+            $this->set($internal, in_array($opt, $this->options));
         }
 
         $this->setupIntervention();
@@ -229,7 +238,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         $this->imageSizeOptions = array_merge([
             'delayed' => $this->delayed,
-            'upscaling' => $this->upscale,
+            'upscaling' => $this->upscaling,
             'cropping' => 'center',
             'quality' => $this->quality,
             'sharpening' => 'soft',
@@ -470,7 +479,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     }
 
     /**
-     * Maps ProcessWire cropping strings to Intervention v3 alignment positions.
+     * Maps ProcessWire cropping strings to Intervention v4 alignment positions.
      * 
      * @param string|bool $crop
      * @return string
@@ -939,6 +948,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         // 2. Resize / Crop Logic
         $cropping = $options['cropping'] ?? true;
 
+        $width = max(1, $width);
+        $height = max(1, $height);
+
         // A. Explicit Coordinates (from hook arguments)
         if (isset($options['crop_x'], $options['crop_y'])) {
             $image->crop($width, $height, x: (int)$options['crop_x'], y: (int)$options['crop_y']);
@@ -1120,7 +1132,11 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             'height' => $params['height'],
             'options' => $params['options']
         ];
-        $files->filePutContents($destPath . ".queue", json_encode($data), LOCK_EX);
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE);
+        if ($json === false) {
+            throw new \Exception("InterventionImage: Queue JSON encode failed for " . basename($destPath));
+        }
+        $files->filePutContents($destPath . ".queue", $json, LOCK_EX);
     }
 
     /**
@@ -1149,7 +1165,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         // Standard Params
         if (!empty($options['rotate'])) $parts[] = 'rot' . (int) $options['rotate'];
-        if (!empty($options['flip'])) $parts[] = 'flip' . substr($options['flip'], 0, 1);
+        if (!empty($options['flip']) && is_string($options['flip'])) $parts[] = 'flip' . substr($options['flip'], 0, 1);
         if (!empty($options['hidpi'])) $parts[] = 'hidpi';
 
         // Crop Info
@@ -1243,14 +1259,14 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         return [
-            (int) $red,
-            (int) $green,
-            (int) $blue
+            max(-100, min(100, (int) $red)),
+            max(-100, min(100, (int) $green)),
+            max(-100, min(100, (int) $blue))
         ];
     }
 
     /**
-     * Maps Focus Point percentages to Intervention v3 alignment positions.
+     * Maps Focus Point percentages to Intervention v4 alignment positions.
      * 
      * @param array $focus [top%, left%] e.g., [20, 50]
      * @return string
@@ -1289,7 +1305,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         $attrs = [];
         foreach ($attributes as $key => $value) {
-            if ($value === null || $value === false || is_string($value) && !strlen($value)) {
+            if ($value === null || $value === false || (is_string($value) && !strlen($value))) {
                 continue;
             }
 
