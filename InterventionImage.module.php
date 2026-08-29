@@ -553,7 +553,12 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $config = $this->wire()->config;
         $image = $event->object;
 
-        if (strcasecmp($image->ext, 'svg') === 0 || $image->mime() === 'image/svg+xml') {
+        if (strcasecmp($image->ext, 'svg') === 0) {
+            $event->return = $image;
+            return;
+        }
+        $imageMime = is_callable([$image, 'mime']) ? $image->mime() : ($image->mime ?? @mime_content_type($image->filename) ?: '');
+        if ($imageMime === 'image/svg+xml') {
             $event->return = $image;
             return;
         }
