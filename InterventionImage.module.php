@@ -461,6 +461,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             if (!is_int($options['insert']['opacity'])) $options['insert']['opacity'] = 100;
         }
 
+        if (!isset($options['upscaling']) && isset($options['upscale'])) {
+            $options['upscaling'] = $options['upscale'];
+        }
+
         $options = array_merge($this->imageSizeOptions, $options);
 
         if ($image->hasFocus && (empty($options['focus']) || !is_array($options['focus']))) {
@@ -926,6 +930,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     protected function create(Pageimage|string $source, string $destination, int $width = 0, int $height = 0, array $options = []): Pageimage|EncodedImage
     {
+        if (!isset($options['upscaling']) && isset($options['upscale'])) {
+            $options['upscaling'] = $options['upscale'];
+        }
+
         $filename = ($source instanceof Pageimage) ? $source->filename : $source;
 
         if (!file_exists($filename)) {
@@ -1018,22 +1026,22 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
         }
 
-        // 3. Effects
+        // 3. Effects — all values clamped per Intervention v4 contracts
         if (($options['sharpening'] ?? 'soft') !== 'none') {
             $amount = ['medium' => 20, 'strong' => 40, 'soft' => 10][$options['sharpening']] ?? 10;
-            $image->sharpen($amount);
+            $image->sharpen(max(0, min(100, (int)$amount)));
         }
 
         if (isset($options['brightness']) && is_numeric($options['brightness'])) {
-            $image->brightness((int)$options['brightness']);
+            $image->brightness(max(-100, min(100, (int)$options['brightness'])));
         }
 
         if (isset($options['contrast']) && is_numeric($options['contrast'])) {
-            $image->contrast((int)$options['contrast']);
+            $image->contrast(max(-100, min(100, (int)$options['contrast'])));
         }
 
         if (isset($options['gamma']) && is_numeric($options['gamma'])) {
-            $image->gamma(floatval($options['gamma']));
+            $image->gamma(max(0.1, min(10, (float)$options['gamma'])));
         }
 
         if (!empty($options['colorize'])) {
@@ -1044,10 +1052,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         if (!empty($options['grayscale']) || !empty($options['greyscale'])) $image->grayscale();
-        if (!empty($options['blur'])) $image->blur((int) $options['blur']);
-        if (!empty($options['sharpen'])) $image->sharpen((int) $options['sharpen']);
+        if (!empty($options['blur'])) $image->blur(max(0, min(100, (int) $options['blur'])));
+        if (!empty($options['sharpen'])) $image->sharpen(max(0, min(100, (int) $options['sharpen'])));
         if (!empty($options['invert'])) $image->invert();
-        if (!empty($options['pixelate'])) $image->pixelate((int) $options['pixelate']);
+        if (!empty($options['pixelate'])) $image->pixelate(max(1, (int) $options['pixelate']));
 
         // Insert Images — Intervention v4 insert(mixed $image, int $x = 0, int $y = 0, string|Alignment $alignment = Alignment::TOP_LEFT, float $transparency = 1)
         if (!empty($options['insert']) && $options['insert']['element']) {
@@ -1064,20 +1072,20 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             );
         }
 
-        $baseQuality = $options['quality'] ?? 90;
+        $baseQuality = max(0, min(100, (int)($options['quality'] ?? 90)));
 
         if (str_ends_with($destination, '.webp')) {
-            $q = $this->imageSizeOptions['webp']['quality'] ?? $baseQuality;
-            $encoded = $image->encodeUsingFormat(Format::WEBP, quality: (int)$q);
+            $q = max(0, min(100, (int)($this->imageSizeOptions['webp']['quality'] ?? $baseQuality)));
+            $encoded = $image->encodeUsingFormat(Format::WEBP, quality: $q);
         } elseif (str_ends_with($destination, '.avif')) {
-            $q = $this->imageSizeOptions['avif']['quality'] ?? $baseQuality;
-            $encoded = $image->encodeUsingFormat(Format::AVIF, quality: (int)$q);
+            $q = max(0, min(100, (int)($this->imageSizeOptions['avif']['quality'] ?? $baseQuality)));
+            $encoded = $image->encodeUsingFormat(Format::AVIF, quality: $q);
         } elseif (str_ends_with($destination, '.png')) {
             $encoded = $image->encodeUsingFormat(Format::PNG);
         } elseif (str_ends_with($destination, '.gif')) {
             $encoded = $image->encodeUsingFormat(Format::GIF);
         } else {
-            $encoded = $image->encodeUsingFormat(Format::JPEG, quality: (int)$baseQuality);
+            $encoded = $image->encodeUsingFormat(Format::JPEG, quality: $baseQuality);
         }
 
         $encoded->save($destination);
@@ -1104,8 +1112,19 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         $source = $image->getOriginal() ?: $image;
         $ext = $source->ext;
-        if ($this->imageSizeOptions['avifOnly'] || ($params['options']['format'] ?? '') === 'avif') $ext = 'avif';
-        elseif ($this->imageSizeOptions['webpOnly'] || ($params['options']['format'] ?? '') === 'webp') $ext = 'webp';
+
+        $format = $params['options']['format'] ?? '';
+        $avifOnly = !empty($this->imageSizeOptions['avifOnly']);
+        $webpOnly = !empty($this->imageSizeOptions['webpOnly']);
+
+        if ($avifOnly || $format === 'avif') {
+            $ext = 'avif';
+        } elseif ($webpOnly || $format === 'webp') {
+            $ext = 'webp';
+        } elseif (in_array($format, ['png', 'gif', 'jpg', 'jpeg'], true)) {
+            $ext = ($format === 'jpeg') ? 'jpg' : $format;
+        }
+
         $basename = pathinfo($source->basename, PATHINFO_FILENAME);
         return $source->pagefiles->path() . $basename . $this->createSuffix($params) . '.' . $ext;
     }
