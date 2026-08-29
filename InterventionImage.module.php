@@ -4,6 +4,9 @@ namespace ProcessWire;
 
 use Intervention\Image\ImageManager;
 use Intervention\Image\EncodedImage;
+use Intervention\Image\Format;
+use Intervention\Image\Direction;
+use Intervention\Image\Alignment;
 use Intervention\Image\Drivers\Gd\Driver as GdDriver;
 use Intervention\Image\Drivers\Imagick\Driver as ImagickDriver;
 
@@ -12,7 +15,7 @@ if (!class_exists('Intervention\Image\ImageManager')) require __DIR__ . "/vendor
 /**
  * InterventionImageEngine for ProcessWire
  * 
- * High-performance responsive image engine using Intervention Image v3.
+ * High-performance responsive image engine using Intervention Image v4.
  * Supports delayed rendering, auto-detection of drivers, and modern formats like WebP/AVIF.
  * 
  * @property string $driver
@@ -172,6 +175,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
     /**
      * Sets up the Intervention Image manager with fail-safe driver detection
+     * Intervention Image v4 signature: ImageManager(string|DriverInterface $driver, ...$options)
      * 
      * @return void
      * @throws \Exception
@@ -179,31 +183,31 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     protected function setupIntervention(): void
     {
         $selectedDriver = $this->driver ?: 'auto';
-        $driver = null;
+        $driverClass = null;
 
         if ($selectedDriver === 'imagick') {
             if (extension_loaded('imagick') && class_exists('Imagick')) {
-                $driver = new ImagickDriver();
+                $driverClass = ImagickDriver::class;
             }
         } elseif ($selectedDriver === 'gd') {
             if (extension_loaded('gd')) {
-                $driver = new GdDriver();
+                $driverClass = GdDriver::class;
             }
         }
 
-        if (!$driver) {
+        if (!$driverClass) {
             if (extension_loaded('gd')) {
-                $driver = new GdDriver();
+                $driverClass = GdDriver::class;
             } elseif (extension_loaded('imagick') && class_exists('Imagick')) {
-                $driver = new ImagickDriver();
+                $driverClass = ImagickDriver::class;
             }
         }
 
-        if (!$driver) {
+        if (!$driverClass) {
             throw new \Exception("InterventionImage: No valid image driver found.");
         }
 
-        $this->intervention = new ImageManager($driver);
+        $this->intervention = new ImageManager($driverClass, autoOrientation: true);
     }
 
     /**
@@ -812,8 +816,13 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $encoded = $this->create($source, $destination, $data['width'], $data['height'], $data['options']);
             $files->unlink($destination . '.queue');
 
-            $mime = $encoded->mimetype();
-            $body = (string)$encoded;
+            if ($encoded instanceof EncodedImage) {
+                $mime = $encoded->mediaType();
+                $body = (string)$encoded;
+            } else {
+                $body = file_get_contents($destination);
+                $mime = mime_content_type($destination) ?: 'application/octet-stream';
+            }
             $size = strlen($body);
 
             if (!headers_sent()) {
@@ -874,10 +883,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!file_exists($lqipPath)) {
             try {
                 if (!file_exists($image->filename)) return '';
-                $this->intervention->read($image->filename)
+                $this->intervention->decode($image->filename)
                     ->scale(width: 100)
                     ->pixelate(6)
-                    ->toWebp(20)->save($lqipPath);
+                    ->encodeUsingFormat(Format::WEBP, quality: 20)->save($lqipPath);
             } catch (\Exception $e) {
                 if ($this->wire()->config->debug) {
                     $this->wire()->log->error("InterventionImage LQIP Error: " . $e->getMessage());
@@ -914,22 +923,29 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             throw new \Exception("InterventionImage: Source file not found: " . $filename);
         }
 
-        $image = $this->intervention->read($filename);
+        $image = $this->intervention->decode($filename);
 
         // 1. Transformations (Rotate/Flip/Flop)
-        if (!empty($options['rotate'])) $image->rotate((int) $options['rotate']);
-        if (!empty($options['flip'])) is_string($options['flip']) && str_starts_with($options['flip'], 'v') ? $image->flip() : $image->flop();
+        if (!empty($options['rotate'])) $image->rotate((float) $options['rotate']);
+        if (!empty($options['flip'])) {
+            $image->flip(
+                (is_string($options['flip']) && str_starts_with($options['flip'], 'v'))
+                    ? Direction::VERTICAL
+                    : Direction::HORIZONTAL
+            );
+        }
+        if (!empty($options['flop'])) $image->flip(Direction::HORIZONTAL);
 
         // 2. Resize / Crop Logic
         $cropping = $options['cropping'] ?? true;
 
         // A. Explicit Coordinates (from hook arguments)
         if (isset($options['crop_x'], $options['crop_y'])) {
-            $image->crop($width, $height, (int)$options['crop_x'], (int)$options['crop_y']);
+            $image->crop($width, $height, x: (int)$options['crop_x'], y: (int)$options['crop_y']);
         }
         // B. String Coordinates (e.g. x100y200)
         elseif (is_string($cropping) && preg_match('/^x(\d+)y(\d+)$/i', $cropping, $m)) {
-            $image->crop($width, $height, (int)$m[1], (int)$m[2]);
+            $image->crop($width, $height, x: (int)$m[1], y: (int)$m[2]);
         }
         // C. Array Coordinates (e.g. array(100, 200) or array('50%', '50%'))
         elseif (is_array($cropping) && count($cropping) === 2) {
@@ -941,7 +957,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                 ? (int) ($image->height() * ((float)$cropping[1] / 100))
                 : (int) $cropping[1];
 
-            $image->crop($width, $height, $cx, $cy);
+            $image->crop($width, $height, x: $cx, y: $cy);
         }
         // D. Standard Resize / Cover / Focus
         else {
@@ -1015,21 +1031,24 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
         }
 
-        if (!empty($options['grayscale']) || !empty($options['greyscale'])) $image->greyscale();
-        if (!empty($options['flop'])) $image->flop();
+        if (!empty($options['grayscale']) || !empty($options['greyscale'])) $image->grayscale();
         if (!empty($options['blur'])) $image->blur((int) $options['blur']);
         if (!empty($options['sharpen'])) $image->sharpen((int) $options['sharpen']);
         if (!empty($options['invert'])) $image->invert();
         if (!empty($options['pixelate'])) $image->pixelate((int) $options['pixelate']);
 
-        // Insert Images
+        // Insert Images — Intervention v4 insert(mixed $image, int $x = 0, int $y = 0, string|Alignment $alignment = Alignment::TOP_LEFT, float $transparency = 1)
         if (!empty($options['insert']) && $options['insert']['element']) {
-            $image->place(
+            $opacityInt = (int)($options['insert']['opacity'] ?? 100);
+            if ($opacityInt < 0) $opacityInt = 0;
+            if ($opacityInt > 100) $opacityInt = 100;
+            $transparency = $opacityInt / 100;
+            $image->insert(
                 $options['insert']['element'],
-                $options['insert']['position'],
                 (int)$options['insert']['offset_x'],
                 (int)$options['insert']['offset_y'],
-                (int)$options['insert']['opacity']
+                $options['insert']['position'],
+                $transparency
             );
         }
 
@@ -1037,16 +1056,16 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         if (str_ends_with($destination, '.webp')) {
             $q = $this->imageSizeOptions['webp']['quality'] ?? $baseQuality;
-            $encoded = $image->toWebp($q);
+            $encoded = $image->encodeUsingFormat(Format::WEBP, quality: (int)$q);
         } elseif (str_ends_with($destination, '.avif')) {
             $q = $this->imageSizeOptions['avif']['quality'] ?? $baseQuality;
-            $encoded = $image->toAvif($q);
+            $encoded = $image->encodeUsingFormat(Format::AVIF, quality: (int)$q);
         } elseif (str_ends_with($destination, '.png')) {
-            $encoded = $image->toPng();
+            $encoded = $image->encodeUsingFormat(Format::PNG);
         } elseif (str_ends_with($destination, '.gif')) {
-            $encoded = $image->toGif();
+            $encoded = $image->encodeUsingFormat(Format::GIF);
         } else {
-            $encoded = $image->toJpeg($baseQuality);
+            $encoded = $image->encodeUsingFormat(Format::JPEG, quality: (int)$baseQuality);
         }
 
         $encoded->save($destination);
