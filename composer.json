@@ -1,12 +1,17 @@
 {
   "name": "trk/intervention-image",
-  "description": "",
+  "description": "High-performance ProcessWire image engine powered by Intervention Image v4.4 with delayed rendering, WebP/AVIF output, focal-point zoom cropping, LQIP, and ColorExtractor hooks.",
   "type": "pw-module",
   "keywords": [
+    "processwire",
     "totoglu",
     "wire",
     "intervention",
-    "image"
+    "image",
+    "webp",
+    "avif",
+    "lqip",
+    "responsive-images"
   ],
   "homepage": "https://github.com/trk/InterventionImage",
   "license": "MIT",

@@ -5,10 +5,11 @@ A high-performance responsive image engine for ProcessWire powered by [Intervent
 ## Features
 
 - **Delayed Rendering**: Images are generated on-demand when requested by the browser, significantly speeding up initial page loads.
-- **Modern Formats**: Native support for WebP and AVIF output.
+- **Modern Formats**: Native support for WebP and AVIF output with EXIF/metadata stripping (`strip`) and progressive/interlaced encoding.
 - **Driver Agnostic**: Automatically selects the best available driver (Imagick or GD).
 - **Responsive System**: Define centralized breakpoints, aspect ratios, and column widths.
-- **Smart Cropping**: Supports focal point cropping (via standard PW options) and position mapping using `Intervention\Image\Alignment`.
+- **Pixel-Accurate Focal Point + Zoom Cropping**: Respects ProcessWire's exact `focus()` (`top%`, `left%`, `zoom%`) coordinates as well as `Intervention\Image\Alignment` positions.
+- **Color Extraction (v4.4 `ColorExtractor`)**: Native `Pageimage` hooks for `dominantColor()`, `palette()`, and `colorTheme()` (`Theme::VIBRANT_MUTED`).
 - **Srcset Generation**: Automatically generates `srcset` attributes based on configurable scaling factors.
 
 ## Requirements
@@ -83,6 +84,9 @@ You can pass several other image manipulation options during generation:
 
 ```php
 echo $page->image->render('landscape', [
+    'trim' => 10,                 // Trim border whitespace with tolerance (0-100)
+    'cropping' => 'contain',      // Fit inside box without cropping (uses contain / containDown)
+    'background' => 'ffffff',     // Canvas or transparent fill color
     'blur' => 10,                 // Apply gaussian blur
     'pixelate' => 5,              // Pixelate the image
     'brightness' => 15,           // Adjust brightness
@@ -90,12 +94,49 @@ echo $page->image->render('landscape', [
     'colorize' => '255, 0, 0',    // Or as array [255, 0, 0] / ['red' => 255]
     'grayscale' => true,          // Convert to grayscale
     'invert' => true,             // Invert colors
+    'reduceColors' => 64,         // Reduce color palette (1-256)
+    'strip' => true,              // Strip EXIF/metadata
+    'progressive' => true,        // Progressive JPEG / interlaced PNG
+    'modifiers' => [              // Custom Intervention Image v4.4 ModifierInterface or closures
+        static fn(\Intervention\Image\Interfaces\ImageInterface $img) => $img->sharpen(15),
+    ],
 ]);
 ```
 
-### Watermark (Insert) Feature
+### ProcessWire `Pageimage` Hook Methods
 
-You can add a watermark or insert another image on top of the rendered image:
+In addition to `size()`, `crop()`, `render()`, `attrs()`, and `srcset()`, the module attaches the following hook methods to `Pageimage`:
+
+```php
+// 1. Fit image inside dimensions without cropping (contain / containDown)
+$contained = $page->image->contain(800, 600, 'ffffff');
+
+// 2. Apply a watermark image (Pageimage or path)
+$watermarked = $page->image->watermark($logoPageimage, 'bottom-right', opacity: 50, offsetX: 15, offsetY: 15);
+
+// 3. Get compact Base64 WebP Data URI placeholder (LQIP)
+$dataUri = $page->image->lqip();
+
+// 4. Extract dominant hex color (e.g. "#1e3a5f")
+$hex = $page->image->dominantColor();
+
+// 5. Extract dominant color palette (e.g. ["#1e3a5f", "#38bdf8", ...])
+$palette = $page->image->palette(6);
+
+// 6. Extract Vibrant / Muted color theme swatches
+$theme = $page->image->colorTheme();
+// ['vibrant' => '#...', 'muted' => '#...', 'darkVibrant' => '#...', 'darkMuted' => '#...', 'lightVibrant' => '#...', 'lightMuted' => '#...']
+
+// 7. Clear all variations & caches (.lqip.webp, .colors.json, .queue) for a specific Page
+$stats = $page->clearImageVariations();
+
+// 8. Clear all variations & caches site-wide (or pass a Page, ID, or path)
+$stats = $modules->get('InterventionImage')->clearVariations();
+```
+
+### Watermark (`insert`) Option
+
+You can also pass `insert` via options during `size()` or `render()`:
 
 ```php
 echo $page->image->render('landscape', [
@@ -137,3 +178,41 @@ This ensures crisp images on High-DPI (Retina) displays.
 // Get just the srcset string
 $srcset = $page->image->srcset('landscape');
 ```
+
+## ProcessWire Console & Boost Integration
+
+This module includes first-class support for [`trk/processwire-console`](https://github.com/trk/processwire-console) and [`trk/processwire-boost`](https://github.com/trk/processwire-boost).
+
+### CLI Commands (`vendor/bin/wire`)
+
+When `trk/processwire-console` is installed, the module automatically registers the `image:queue` and `image:clear` commands:
+
+```bash
+# Inspect pending delayed (.queue) variations
+php vendor/bin/wire image:queue --status
+
+# Process up to 50 pending delayed variations via CLI / cron
+php vendor/bin/wire image:queue --limit=50
+
+# Remove pending .queue files without rendering
+php vendor/bin/wire image:queue --clear
+
+# Preview or remove generated variations, .lqip.webp, .colors.json, and .queue files
+php vendor/bin/wire image:clear --dry-run
+php vendor/bin/wire image:clear --page=1024
+php vendor/bin/wire image:clear --lqip-only
+php vendor/bin/wire image:clear --colors-only
+```
+
+### Automated Tests (`tests/`)
+
+Run the module's Unit and Feature test suite via Pest:
+
+```bash
+php vendor/bin/wire test
+```
+
+### AI Agent Skill (`pw-intervention-image`)
+
+When `trk/processwire-boost` is installed, `AGENTS.md` and `.agents/skills/pw-intervention-image/SKILL.md` are automatically discovered and synced to your AI coding assistant.
+
