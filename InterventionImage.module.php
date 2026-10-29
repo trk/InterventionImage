@@ -1,30 +1,35 @@
 <?php
 
+declare(strict_types=1);
+
 namespace ProcessWire;
 
-use Intervention\Image\ImageManager;
-use Intervention\Image\EncodedImage;
-use Intervention\Image\Format;
-use Intervention\Image\Direction;
 use Intervention\Image\Alignment;
+use Intervention\Image\Direction;
 use Intervention\Image\Drivers\Gd\Driver as GdDriver;
 use Intervention\Image\Drivers\Imagick\Driver as ImagickDriver;
+use Intervention\Image\Format;
+use Intervention\Image\ImageManager;
+use Intervention\Image\Interfaces\EncodedImageInterface;
 
-if (!class_exists('Intervention\Image\ImageManager')) require __DIR__ . "/vendor/autoload.php";
+if (!class_exists(ImageManager::class)) {
+    require __DIR__ . '/vendor/autoload.php';
+}
 
 /**
  * InterventionImageEngine for ProcessWire
  * 
- * High-performance responsive image engine using Intervention Image v4.
+ * High-performance responsive image engine using Intervention Image v4.4.
  * Supports delayed rendering, auto-detection of drivers, and modern formats like WebP/AVIF.
  * 
+ * @property array $options
  * @property string $driver
  * @property bool $lqip
  * @property bool $lazyload
  * @property bool $inlineLazyload
  * @property int $quality
  * @property bool $delayed
- * @property bool $upscale
+ * @property bool $upscaling
  * @property bool $avifAdd
  * @property bool $webpAdd
  * @property string $outputFormat
@@ -79,8 +84,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         return [
             'title' => __('Intervention Image Engine'),
-            'version' => 101,
-            'summary' => __('Replaces PW sizing with Intervention Image >= 4.3 + Delayed Rendering using ImageManager logic.'),
+            'version' => 102,
+            'summary' => __('Replaces PW sizing with Intervention Image v4.4 + Delayed Rendering.'),
             'author' => 'Iskender TOTOGLU @trk @ukyo',
             'href' => 'https://github.com/trk/InterventionImage',
             'autoload' => true,
@@ -94,7 +99,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     public function __construct()
     {
         parent::__construct();
-        foreach ($this->defaults as $key => $value) $this->set($key, $value);
+        foreach ($this->defaults as $key => $value) {
+            $this->set($key, $value);
+        }
     }
 
     /**
@@ -104,6 +111,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     public function init(): void
     {
+        $enabledOptions = is_array($this->options) ? $this->options : [];
         $map = [
             'delayed' => 'delayed',
             'lqip' => 'lqip',
@@ -114,7 +122,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             'webpAdd' => 'webpAdd',
         ];
         foreach ($map as $opt => $internal) {
-            $this->set($internal, in_array($opt, $this->options));
+            $this->set($internal, in_array($opt, $enabledOptions, true));
         }
 
         $this->setupIntervention();
@@ -122,8 +130,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $this->parseAndSetupConfigs();
 
         if ($this->inlineLazyload) {
-            $this->addHookAfter('Page::render', function (HookEvent $event) {
-                $event->replace = true;
+            $this->addHookAfter('Page::render', function (HookEvent $event): void {
+                if ($this->wire()->config->admin || !is_string($event->return)) {
+                    return;
+                }
                 $event->return = str_replace('</head>', $this->inlineLazyload() . '</head>', $event->return);
             });
         }
@@ -393,24 +403,32 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * @param int|array|null $height
      * @param array|string|int|bool|null $options
      * 
-     * @return array{width: int, height: int, options: array}
+     * @return array{width: int, height: int, options: array<string, mixed>}
      */
-    protected function resolveParameters(Pageimage $image, int|string|null $width, int|array|null $height, array|string|int|bool|null $options = []): ?array
+    protected function resolveParameters(Pageimage $image, int|string|null $width, int|array|null $height, array|string|int|bool|null $options = []): array
     {
         /** @var Config $config */
         $config = $this->wire()->config;
 
-        if (is_string($options)) $options = ['cropping' => $options];
-        else if (is_int($options)) $options = ['quality' => $options];
-        else if (is_bool($options)) $options = ['upscaling' => $options];
-        if (!is_array($options)) $options = [];
+        if (is_string($options)) {
+            $options = ['cropping' => $options];
+        } elseif (is_int($options)) {
+            $options = ['quality' => $options];
+        } elseif (is_bool($options)) {
+            $options = ['upscaling' => $options];
+        }
+        if (!is_array($options)) {
+            $options = [];
+        }
 
         if (is_array($height)) {
             $options = array_merge($options, $height);
             $height = 0;
         }
 
-        if (!is_int($height)) $height = 0;
+        if (!is_int($height)) {
+            $height = 0;
+        }
 
         if (is_string($width) && !empty($config->imageSizes[$width])) {
             $size = $config->imageSizes[$width];
@@ -420,49 +438,58 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             unset($options['width'], $options['height']);
         }
 
-        if (!is_int($width)) $width = 0;
+        if (!is_int($width)) {
+            $width = 0;
+        }
 
         if ($width > 0 && $height === 0) {
-            $iw = max(1, $image->width);
-            $ih = max(1, $image->height);
+            $iw = max(1, (int) $image->width);
+            $ih = max(1, (int) $image->height);
             $height = (int) round($width * ($ih / $iw));
         } elseif ($height > 0 && $width === 0) {
-            $iw = max(1, $image->width);
-            $ih = max(1, $image->height);
+            $iw = max(1, (int) $image->width);
+            $ih = max(1, (int) $image->height);
             $width = (int) round($height / ($ih / $iw));
         }
 
         if (!empty($options['insert'])) {
-
             if ($options['insert'] instanceof Pageimage) {
                 $options['insert'] = [
-                    'element' => $options['insert']->filename
+                    'element' => $options['insert']->filename,
                 ];
             } elseif (is_string($options['insert']) && is_file($options['insert'])) {
                 $options['insert'] = [
-                    'element' => $options['insert']
+                    'element' => $options['insert'],
                 ];
             }
 
-            if (!is_array($options['insert'])) $options['insert'] = [];
+            if (!is_array($options['insert'])) {
+                $options['insert'] = [];
+            }
 
             $options['insert'] = array_merge([
                 'element' => null,
-                'position' => 'top-left',
+                'position' => Alignment::TOP_LEFT->value,
                 'offset_x' => 0,
                 'offset_y' => 0,
-                'opacity' => 100
+                'opacity' => 100,
             ], $options['insert']);
 
-            if (!file_exists($options['insert']['element'])) $options['insert']['element'] = null;
+            if (!is_string($options['insert']['element']) || !file_exists($options['insert']['element'])) {
+                $options['insert']['element'] = null;
+            }
 
-            if (!is_int($options['insert']['offset_x'])) $options['insert']['offset_x'] = 0;
-            if (!is_int($options['insert']['offset_y'])) $options['insert']['offset_y'] = 0;
-            if (!is_int($options['insert']['opacity'])) $options['insert']['opacity'] = 100;
-        }
+            $options['insert']['position'] = Alignment::tryCreate((string) $options['insert']['position'])?->value ?? Alignment::TOP_LEFT->value;
 
-        if (!isset($options['upscaling']) && isset($options['upscale'])) {
-            $options['upscaling'] = $options['upscale'];
+            if (!is_int($options['insert']['offset_x'])) {
+                $options['insert']['offset_x'] = 0;
+            }
+            if (!is_int($options['insert']['offset_y'])) {
+                $options['insert']['offset_y'] = 0;
+            }
+            if (!is_int($options['insert']['opacity'])) {
+                $options['insert']['opacity'] = 100;
+            }
         }
 
         $options = array_merge($this->imageSizeOptions, $options);
@@ -471,47 +498,70 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $focus = $image->focus();
             $options['focus'] = [
                 $focus['top'],
-                $focus['left']
+                $focus['left'],
             ];
         }
 
         return [
             'width' => $width,
             'height' => $height,
-            'options' => $options
+            'options' => $options,
         ];
     }
 
     /**
-     * Maps ProcessWire cropping strings to Intervention v4 alignment positions.
-     * 
-     * @param string|bool $crop
-     * @return string
+     * Checks whether a Pageimage represents an SVG vector file.
      */
-    protected function mapCropPosition($crop): string
+    protected function isSvg(Pageimage $image): bool
     {
-        if ($crop === true || $crop === 'true' || $crop === 'center') return 'center';
+        if (strcasecmp($image->ext, 'svg') === 0) {
+            return true;
+        }
 
-        $map = [
-            'north' => 'top',
-            'n' => 'top',
-            'northwest' => 'top-left',
-            'nw' => 'top-left',
-            'northeast' => 'top-right',
-            'ne' => 'top-right',
-            'south' => 'bottom',
-            's' => 'bottom',
-            'southwest' => 'bottom-left',
-            'sw' => 'bottom-left',
-            'southeast' => 'bottom-right',
-            'se' => 'bottom-right',
-            'west' => 'left',
-            'w' => 'left',
-            'east' => 'right',
-            'e' => 'right'
+        $imageMime = function_exists('mime_content_type') && is_string($image->filename) && file_exists($image->filename)
+            ? @mime_content_type($image->filename)
+            : '';
+
+        return $imageMime === 'image/svg+xml';
+    }
+
+    /**
+     * Maps ProcessWire cropping strings to Intervention v4.4 Alignment enum cases.
+     * 
+     * @param string|bool|Alignment $crop
+     * @return Alignment
+     */
+    protected function mapCropPosition(string|bool|Alignment $crop): Alignment
+    {
+        if ($crop instanceof Alignment) {
+            return $crop;
+        }
+
+        if (is_bool($crop) || $crop === 'true' || $crop === 'center') {
+            return Alignment::CENTER;
+        }
+
+        $compassMap = [
+            'north' => Alignment::TOP,
+            'n' => Alignment::TOP,
+            'northwest' => Alignment::TOP_LEFT,
+            'nw' => Alignment::TOP_LEFT,
+            'northeast' => Alignment::TOP_RIGHT,
+            'ne' => Alignment::TOP_RIGHT,
+            'south' => Alignment::BOTTOM,
+            's' => Alignment::BOTTOM,
+            'southwest' => Alignment::BOTTOM_LEFT,
+            'sw' => Alignment::BOTTOM_LEFT,
+            'southeast' => Alignment::BOTTOM_RIGHT,
+            'se' => Alignment::BOTTOM_RIGHT,
+            'west' => Alignment::LEFT,
+            'w' => Alignment::LEFT,
+            'east' => Alignment::RIGHT,
+            'e' => Alignment::RIGHT,
         ];
 
-        return $map[strtolower((string)$crop)] ?? 'center';
+        $normalized = strtolower(trim($crop));
+        return $compassMap[$normalized] ?? Alignment::tryCreate($normalized) ?? Alignment::CENTER;
     }
 
     /**
@@ -519,9 +569,11 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * 
      * @param HookEvent $event
      */
-    public function hookCrop(HookEvent $event)
+    public function hookCrop(HookEvent $event): void
     {
-        if ($this->wire()->config->admin) return;
+        if ($this->wire()->config->admin) {
+            return;
+        }
 
         /** @var Pageimage $image */
         $image = $event->object;
@@ -544,7 +596,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * 
      * @param HookEvent $event
      */
-    public function hookSize(HookEvent $event)
+    public function hookSize(HookEvent $event): void
     {
         /**
          * @var Config $config
@@ -553,19 +605,15 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $config = $this->wire()->config;
         $image = $event->object;
 
-        if (strcasecmp($image->ext, 'svg') === 0) {
-            $event->return = $image;
-            return;
-        }
-        $imageMime = function_exists('mime_content_type') && file_exists($image->filename)
-            ? @mime_content_type($image->filename)
-            : '';
-        if ($imageMime === 'image/svg+xml') {
+        if ($this->isSvg($image)) {
+            $event->replace = true;
             $event->return = $image;
             return;
         }
 
-        if ($config->admin) return;
+        if ($config->admin) {
+            return;
+        }
 
         $params = $this->resolveParameters($image, $event->arguments(0), $event->arguments(1), $event->arguments(2));
         $path = $this->getVariationPath($image, $params);
@@ -595,10 +643,15 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * 
      * @param HookEvent $event
      */
-    public function hookSrcset(HookEvent $event)
+    public function hookSrcset(HookEvent $event): void
     {
         /** @var Pageimage $image */
         $image = $event->object;
+
+        if ($this->isSvg($image)) {
+            $event->return = '';
+            return;
+        }
 
         $parameters = $this->resolveParameters(
             $image,
@@ -607,38 +660,41 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $event->arguments(2)
         );
 
+        $origW = max(1, (int) $image->width);
+        $origH = max(1, (int) $image->height);
+
         $baseW = 0;
         $baseH = 0;
 
         if (isset($parameters['options']['baseWidth'], $parameters['options']['baseHeight'])) {
-            $baseW = $parameters['options']['baseWidth'];
-            $baseH = $parameters['options']['baseHeight'];
+            $baseW = (int) $parameters['options']['baseWidth'];
+            $baseH = (int) $parameters['options']['baseHeight'];
         } elseif ($parameters['width'] > 0) {
             $baseW = $parameters['width'];
             $baseH = $parameters['height'];
         } else {
-            $baseW = min($image->width, $this->formatted['breakpoint']['value'] ?? 1200);
-            $baseH = (int) round($baseW * ($image->height / $image->width));
+            $baseW = min($origW, (int) ($this->formatted['breakpoint']['value'] ?? 1200));
+            $baseH = (int) round($baseW * ($origH / $origW));
         }
 
         $variations = [];
         $factors = $this->formatted['factors'] ?? [0.5, 1, 1.5, 2];
 
         $threshold = 150;
-        $targetRatio = ($baseH > 0) ? ($baseW / $baseH) : ($image->width / $image->height);
+        $targetRatio = ($baseH > 0) ? ($baseW / $baseH) : ($origW / $origH);
 
         foreach ($factors as $factor) {
             $f = (float) $factor;
             $w = (int) ($baseW * $f);
 
-            if ($w >= ($image->width - $threshold)) {
-                $w = $image->width;
+            if ($w >= ($origW - $threshold)) {
+                $w = $origW;
             }
 
-            if ($w === $image->width) {
-                $origRatio = $image->width / $image->height;
+            if ($w === $origW) {
+                $origRatio = $origW / $origH;
                 if (abs($targetRatio - $origRatio) < 0.01) {
-                    $h = $image->height;
+                    $h = $origH;
                 } else {
                     $h = (int) round($w / $targetRatio);
                 }
@@ -664,7 +720,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * 
      * @param HookEvent $event
      */
-    public function hookAttrs(HookEvent $event)
+    public function hookAttrs(HookEvent $event): void
     {
         /** @var Pageimage $image */
         $image = $event->object;
@@ -680,31 +736,37 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $height = $params['height'];
         $options = $params['options'];
 
+        $origW = max(1, (int) $image->width);
+        $origH = max(1, (int) $image->height);
+
         if ($width === 0) {
-            $width = min($image->width, ($this->formatted['breakpoint']['value'] ?? 1200));
-            $height = (int) round($width * ($image->height / $image->width));
+            $width = min($origW, (int) ($this->formatted['breakpoint']['value'] ?? 1200));
+            $height = (int) round($width * ($origH / $origW));
         }
 
-        $source = $image->size($width, $height, $options);
+        $isSvg = $this->isSvg($image);
+        $source = $isSvg ? $image : $image->size($width, $height, $options);
 
         $srcsetOptions = array_merge($options, ['baseWidth' => $width, 'baseHeight' => $height]);
 
         $sources = [];
-        // AVIF Source
-        if ($this->avifAdd && $source->ext !== 'avif') {
-            $sources[] = [
-                'type' => 'image/avif',
-                'srcset' => $image->srcset(null, array_merge($srcsetOptions, ['format' => 'avif']))
-            ];
-        }
+        if (!$isSvg) {
+            // AVIF Source
+            if ($this->avifAdd && $source->ext !== 'avif') {
+                $sources[] = [
+                    'type' => 'image/avif',
+                    'srcset' => $image->srcset(null, array_merge($srcsetOptions, ['format' => 'avif'])),
+                ];
+            }
 
-        // WebP Source
-        if ($this->webpAdd && $source->ext !== 'webp') {
-            $webpSrcset = $image->srcset(null, array_merge($srcsetOptions, ['format' => 'webp']));
-            $sources[] = [
-                'type' => 'image/webp',
-                'srcset' => $webpSrcset
-            ];
+            // WebP Source
+            if ($this->webpAdd && $source->ext !== 'webp') {
+                $webpSrcset = $image->srcset(null, array_merge($srcsetOptions, ['format' => 'webp']));
+                $sources[] = [
+                    'type' => 'image/webp',
+                    'srcset' => $webpSrcset,
+                ];
+            }
         }
 
         $loading = $options['loading'] ?? null;
@@ -722,9 +784,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             'width' => $width,
             'height' => $height,
             'alt' => $image->description ?: pathinfo($image->basename, PATHINFO_FILENAME),
-            'srcset' => $image->srcset(null, $srcsetOptions),
+            'srcset' => $isSvg ? '' : $image->srcset(null, $srcsetOptions),
             'sources' => $sources,
-            'sizes' => $options['sizes'] ?? sprintf('(max-width: %dpx) 100vw, %dpx', $width, $width),
+            'sizes' => $isSvg ? '' : ($options['sizes'] ?? sprintf('(max-width: %dpx) 100vw, %dpx', $width, $width)),
         ];
 
         // set class, style as array
@@ -735,7 +797,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
         }
 
-        if ($this->lqip) {
+        if ($this->lqip && !$isSvg) {
             $base64 = $this->generateLqip($image);
             if ($base64) {
                 $attrs['class'][] = 'lazyload';
@@ -759,7 +821,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * 
      * @param HookEvent $event
      */
-    public function hookRender(HookEvent $event)
+    public function hookRender(HookEvent $event): void
     {
         $event->replace = true;
 
@@ -783,29 +845,31 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                 $sourceAttrs = [
                     'srcset' => $source['srcset'],
                     'sizes' => $sizes,
-                    'type' => $source['type']
+                    'type' => $source['type'],
                 ];
-                $sourceHtml .= "<source " . $this->attrs($sourceAttrs) . ">";
+                $sourceHtml .= '<source ' . $this->attrs($sourceAttrs) . '>';
             }
 
             unset($attrs['srcset'], $attrs['sizes']);
 
-            $imgHtml = "<img " . $this->attrs($attrs) . ">";
+            $imgHtml = '<img ' . $this->attrs($attrs) . '>';
             $event->return = "<picture>{$sourceHtml}{$imgHtml}</picture>";
         } else {
-            $event->return = "<img " . $this->attrs($attrs) . ">";
+            $event->return = '<img ' . $this->attrs($attrs) . '>';
         }
     }
 
     /**
-     * 404 Handler: Generates the image using Intervention v3 when requested
+     * 404 Handler: Generates the image using Intervention Image v4.4 when requested
      * 
      * @param HookEvent $event
      */
-    public function handlePageNotFound(HookEvent $event)
+    public function handlePageNotFound(HookEvent $event): void
     {
-        $url = $event->arguments(1) ?: $_SERVER['REQUEST_URI'];
-        if (!$url) return;
+        $url = (string) ($event->arguments(1) ?: ($_SERVER['REQUEST_URI'] ?? ''));
+        if ($url === '') {
+            return;
+        }
 
         /**
          * @var Config $config
@@ -814,16 +878,23 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $config = $event->wire()->config;
         $files = $event->wire()->files;
 
-        if (!str_contains($url, $config->urls->files)) return;
+        if (!str_contains($url, $config->urls->files)) {
+            return;
+        }
 
         $root = rtrim($config->paths->root, '/\\');
-        $url = parse_url($url, PHP_URL_PATH);
-        $destination = $root . str_replace('/', DIRECTORY_SEPARATOR, $url);
+        $urlPath = parse_url($url, PHP_URL_PATH);
+        if (!is_string($urlPath) || $urlPath === '') {
+            return;
+        }
+        $destination = $root . str_replace('/', DIRECTORY_SEPARATOR, $urlPath);
 
-        if (!$files->exists($destination . '.queue') || !($data = wireDecodeJSON($files->fileGetContents($destination . '.queue'), true))) return;
+        if (!$files->exists($destination . '.queue') || !($data = wireDecodeJSON($files->fileGetContents($destination . '.queue'), true))) {
+            return;
+        }
 
         try {
-            $source = $config->paths->site . ltrim($data['source'], '/');
+            $source = $config->paths->site . ltrim((string) $data['source'], '/');
 
             if (!$files->exists($source)) {
                 $files->unlink($destination . '.queue');
@@ -833,14 +904,14 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $event->replace = true;
             $event->cancelHooks = true;
 
-            $encoded = $this->create($source, $destination, $data['width'], $data['height'], $data['options']);
+            $encoded = $this->create($source, $destination, (int) $data['width'], (int) $data['height'], (array) $data['options']);
             $files->unlink($destination . '.queue');
 
-            if ($encoded instanceof EncodedImage) {
+            if ($encoded instanceof EncodedImageInterface) {
                 $mime = $encoded->mediaType();
-                $body = (string)$encoded;
+                $body = (string) $encoded;
             } else {
-                $body = file_get_contents($destination);
+                $body = (string) file_get_contents($destination);
                 $mime = mime_content_type($destination) ?: 'application/octet-stream';
             }
             $size = strlen($body);
@@ -848,7 +919,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             if (!headers_sent()) {
                 header("Content-Type: $mime");
                 header("Content-Length: $size");
-                header("Cache-Control: public, max-age=31536000, immutable");
+                header('Cache-Control: public, max-age=31536000, immutable');
             }
 
             echo $body;
@@ -856,8 +927,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                 session_write_close();
             }
             exit;
-        } catch (\Exception $e) {
-            $this->wire()->log->error("InterventionImage Error: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            $this->wire()->log->error('InterventionImage Error: ' . $e->getMessage());
         }
     }
 
@@ -866,14 +937,18 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * 
      * @param HookEvent $e
      */
-    public function hookDeleteVariations(HookEvent $e)
+    public function hookDeleteVariations(HookEvent $e): void
     {
-        if (!$e->object instanceof Pageimage) return;
+        if (!$e->object instanceof Pageimage) {
+            return;
+        }
         $pi = pathinfo($e->object->filename);
         $prefix = $pi['filename'] . '.';
         $dir = $pi['dirname'];
 
-        if (!is_dir($dir)) return;
+        if (!is_dir($dir)) {
+            return;
+        }
 
         try {
             $it = new \FilesystemIterator($dir, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::CURRENT_AS_PATHNAME);
@@ -883,9 +958,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                     $this->wire()->files->unlink($path);
                 }
             }
-        } catch (\Exception $ex) {
+        } catch (\Throwable $ex) {
             if ($this->wire()->config->debug) {
-                $this->wire()->log->warning("InterventionImage variation delete warning: " . $ex->getMessage());
+                $this->wire()->log->warning('InterventionImage variation delete warning: ' . $ex->getMessage());
             }
         }
     }
@@ -902,14 +977,17 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         if (!file_exists($lqipPath)) {
             try {
-                if (!file_exists($image->filename)) return '';
-                $this->intervention->decode($image->filename)
+                if (!file_exists($image->filename) || filesize($image->filename) === 0) {
+                    return '';
+                }
+                $this->intervention->decodePath($image->filename)
                     ->scale(width: 100)
                     ->pixelate(6)
-                    ->encodeUsingFormat(Format::WEBP, quality: 20)->save($lqipPath);
-            } catch (\Exception $e) {
+                    ->encodeUsingFormat(Format::WEBP, quality: 20)
+                    ->save($lqipPath);
+            } catch (\Throwable $e) {
                 if ($this->wire()->config->debug) {
-                    $this->wire()->log->error("InterventionImage LQIP Error: " . $e->getMessage());
+                    $this->wire()->log->error('InterventionImage LQIP Error: ' . $e->getMessage());
                 }
                 return '';
             }
@@ -917,7 +995,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         if (file_exists($lqipPath)) {
             $data = file_get_contents($lqipPath);
-            return 'data:image/webp;base64,' . base64_encode($data);
+            if ($data !== false) {
+                return 'data:image/webp;base64,' . base64_encode($data);
+            }
         }
 
         return '';
@@ -925,40 +1005,38 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
     /**
      * Centralized image creation method.
-     * Handles reading, processing, saving, and returning the result.
+     * Handles decoding, transforming, encoding, and saving the result via Intervention Image v4.4.
      * 
      * @param Pageimage|string $source Pageimage object or absolute path string
      * @param string $destination Absolute destination path
      * @param int $width Target width
      * @param int $height Target height
-     * @param array $options Options array
+     * @param array<string, mixed> $options Options array
      * 
-     * @return Pageimage|EncodedImage Returns Pageimage for hooks, EncodedImage for direct output
+     * @return Pageimage|EncodedImageInterface Returns Pageimage for hooks, EncodedImageInterface for direct output
      */
-    protected function create(Pageimage|string $source, string $destination, int $width = 0, int $height = 0, array $options = []): Pageimage|EncodedImage
+    protected function create(Pageimage|string $source, string $destination, int $width = 0, int $height = 0, array $options = []): Pageimage|EncodedImageInterface
     {
-        if (!isset($options['upscaling']) && isset($options['upscale'])) {
-            $options['upscaling'] = $options['upscale'];
-        }
-
         $filename = ($source instanceof Pageimage) ? $source->filename : $source;
 
         if (!file_exists($filename)) {
-            throw new \Exception("InterventionImage: Source file not found: " . $filename);
+            throw new \RuntimeException('InterventionImage: Source file not found: ' . $filename);
         }
 
-        $image = $this->intervention->decode($filename);
+        $image = $this->intervention->decodePath($filename);
 
-        // 1. Transformations (Rotate/Flip/Flop)
-        if (!empty($options['rotate'])) $image->rotate((float) $options['rotate']);
+        // 1. Transformations (Rotate / Flip)
+        if (!empty($options['rotate'])) {
+            $image->rotate((float) $options['rotate']);
+        }
         if (!empty($options['flip'])) {
-            $image->flip(
-                (is_string($options['flip']) && str_starts_with($options['flip'], 'v'))
-                    ? Direction::VERTICAL
-                    : Direction::HORIZONTAL
-            );
+            $direction = match (true) {
+                $options['flip'] instanceof Direction => $options['flip'],
+                is_string($options['flip']) && str_starts_with(strtolower($options['flip']), 'v') => Direction::VERTICAL,
+                default => Direction::HORIZONTAL,
+            };
+            $image->flip($direction);
         }
-        if (!empty($options['flop'])) $image->flip(Direction::HORIZONTAL);
 
         // 2. Resize / Crop Logic
         $cropping = $options['cropping'] ?? true;
@@ -968,20 +1046,20 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         // A. Explicit Coordinates (from hook arguments)
         if (isset($options['crop_x'], $options['crop_y'])) {
-            $image->crop($width, $height, x: (int)$options['crop_x'], y: (int)$options['crop_y']);
+            $image->crop($width, $height, x: (int) $options['crop_x'], y: (int) $options['crop_y']);
         }
         // B. String Coordinates (e.g. x100y200)
         elseif (is_string($cropping) && preg_match('/^x(\d+)y(\d+)$/i', $cropping, $m)) {
-            $image->crop($width, $height, x: (int)$m[1], y: (int)$m[2]);
+            $image->crop($width, $height, x: (int) $m[1], y: (int) $m[2]);
         }
-        // C. Array Coordinates (e.g. array(100, 200) or array('50%', '50%'))
+        // C. Array Coordinates (e.g. [100, 200] or ['50%', '50%'])
         elseif (is_array($cropping) && count($cropping) === 2) {
-            $cx = str_contains((string)$cropping[0], '%')
-                ? (int) ($image->width() * ((float)$cropping[0] / 100))
+            $cx = str_contains((string) $cropping[0], '%')
+                ? (int) ($image->width() * ((float) $cropping[0] / 100))
                 : (int) $cropping[0];
 
-            $cy = str_contains((string)$cropping[1], '%')
-                ? (int) ($image->height() * ((float)$cropping[1] / 100))
+            $cy = str_contains((string) $cropping[1], '%')
+                ? (int) ($image->height() * ((float) $cropping[1] / 100))
                 : (int) $cropping[1];
 
             $image->crop($width, $height, x: $cx, y: $cy);
@@ -989,7 +1067,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         // D. Standard Resize / Cover / Focus
         else {
             $isCover = false;
-            $align = 'center';
+            $align = Alignment::CENTER;
 
             if (($cropping === true || $cropping === 'center') && !empty($options['focus']) && is_array($options['focus'])) {
                 $align = $this->mapFocusToPosition($options['focus']);
@@ -999,56 +1077,34 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                 $isCover = true;
             }
 
+            $upscale = !empty($options['upscaling']) || (bool) $this->upscaling;
             if ($isCover) {
-                $upscale = !empty($options['upscaling']) || in_array('upscale', $this->options);
-                if ($upscale) {
-                    $image->cover($width, $height, $align);
-                } else {
-                    if ($width > $image->width() || $height > $image->height()) {
-                        // Calculate maximum crop dimensions that fit the target aspect ratio inside the original image
-                        $targetRatio = $width / $height;
-                        $origRatio = $image->width() / $image->height();
-
-                        if ($origRatio >= $targetRatio) {
-                            // Original is wider: limit by height
-                            $cropH = $image->height();
-                            $cropW = (int) round($cropH * $targetRatio);
-                        } else {
-                            // Original is narrower: limit by width
-                            $cropW = $image->width();
-                            $cropH = (int) round($cropW / $targetRatio);
-                        }
-                        $image->cover($cropW, $cropH, $align);
-                    } else {
-                        $image->cover($width, $height, $align);
-                    }
-                }
+                $upscale
+                    ? $image->cover($width, $height, $align)
+                    : $image->coverDown($width, $height, $align);
             } else {
-                $upscale = !empty($options['upscaling']) || in_array('upscale', $this->options);
-                if ($upscale) {
-                    $image->scale($width ?: null, $height ?: null);
-                } else {
-                    $image->scaleDown($width ?: null, $height ?: null);
-                }
+                $upscale
+                    ? $image->scale($width ?: null, $height ?: null)
+                    : $image->scaleDown($width ?: null, $height ?: null);
             }
         }
 
-        // 3. Effects — all values clamped per Intervention v4 contracts
+        // 3. Effects — all values clamped per Intervention v4.4 contracts
         if (($options['sharpening'] ?? 'soft') !== 'none') {
-            $amount = ['medium' => 20, 'strong' => 40, 'soft' => 10][$options['sharpening']] ?? 10;
-            $image->sharpen(max(0, min(100, (int)$amount)));
+            $amount = ['medium' => 20, 'strong' => 40, 'soft' => 10][(string) $options['sharpening']] ?? 10;
+            $image->sharpen(max(0, min(100, (int) $amount)));
         }
 
         if (isset($options['brightness']) && is_numeric($options['brightness'])) {
-            $image->brightness(max(-100, min(100, (int)$options['brightness'])));
+            $image->brightness(max(-100, min(100, (int) $options['brightness'])));
         }
 
         if (isset($options['contrast']) && is_numeric($options['contrast'])) {
-            $image->contrast(max(-100, min(100, (int)$options['contrast'])));
+            $image->contrast(max(-100, min(100, (int) $options['contrast'])));
         }
 
         if (isset($options['gamma']) && is_numeric($options['gamma'])) {
-            $image->gamma(max(0.1, min(10, (float)$options['gamma'])));
+            $image->gamma(max(0.1, min(10.0, (float) $options['gamma'])));
         }
 
         if (!empty($options['colorize'])) {
@@ -1058,43 +1114,48 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
         }
 
-        if (!empty($options['grayscale']) || !empty($options['greyscale'])) $image->grayscale();
-        if (!empty($options['blur'])) $image->blur(max(0, min(100, (int) $options['blur'])));
-        if (!empty($options['sharpen'])) $image->sharpen(max(0, min(100, (int) $options['sharpen'])));
-        if (!empty($options['invert'])) $image->invert();
-        if (!empty($options['pixelate'])) $image->pixelate(max(1, (int) $options['pixelate']));
+        if (!empty($options['grayscale'])) {
+            $image->grayscale();
+        }
+        if (!empty($options['blur'])) {
+            $image->blur(max(0, min(100, (int) $options['blur'])));
+        }
+        if (!empty($options['sharpen'])) {
+            $image->sharpen(max(0, min(100, (int) $options['sharpen'])));
+        }
+        if (!empty($options['invert'])) {
+            $image->invert();
+        }
+        if (!empty($options['pixelate'])) {
+            $image->pixelate(max(1, (int) $options['pixelate']));
+        }
 
-        // Insert Images — Intervention v4 insert(mixed $image, int $x = 0, int $y = 0, string|Alignment $alignment = Alignment::TOP_LEFT, float $transparency = 1)
-        if (!empty($options['insert']) && $options['insert']['element']) {
-            $opacityInt = (int)($options['insert']['opacity'] ?? 100);
-            if ($opacityInt < 0) $opacityInt = 0;
-            if ($opacityInt > 100) $opacityInt = 100;
+        // 4. Watermark / Insert — Intervention v4.4 insert(mixed $image, int $x = 0, int $y = 0, string|Alignment $alignment = Alignment::TOP_LEFT, float $transparency = 1)
+        if (!empty($options['insert']) && is_array($options['insert']) && !empty($options['insert']['element'])) {
+            $opacityInt = max(0, min(100, (int) ($options['insert']['opacity'] ?? 100)));
             $transparency = $opacityInt / 100;
+            $alignment = Alignment::tryCreate((string) ($options['insert']['position'] ?? 'top-left')) ?? Alignment::TOP_LEFT;
             $image->insert(
                 $options['insert']['element'],
-                (int)$options['insert']['offset_x'],
-                (int)$options['insert']['offset_y'],
-                $options['insert']['position'],
+                (int) ($options['insert']['offset_x'] ?? 0),
+                (int) ($options['insert']['offset_y'] ?? 0),
+                $alignment,
                 $transparency
             );
         }
 
-        $baseQuality = max(0, min(100, (int)($options['quality'] ?? 90)));
+        // 5. Encode & Save via Intervention v4.4 Format enum
+        $baseQuality = max(0, min(100, (int) ($options['quality'] ?? $this->quality ?: 80)));
+        $ext = strtolower(pathinfo($destination, PATHINFO_EXTENSION));
+        $format = Format::tryCreate($ext) ?? Format::JPEG;
 
-        if (str_ends_with($destination, '.webp')) {
-            $q = max(0, min(100, (int)($this->imageSizeOptions['webp']['quality'] ?? $baseQuality)));
-            $encoded = $image->encodeUsingFormat(Format::WEBP, quality: $q);
-        } elseif (str_ends_with($destination, '.avif')) {
-            $q = max(0, min(100, (int)($this->imageSizeOptions['avif']['quality'] ?? $baseQuality)));
-            $encoded = $image->encodeUsingFormat(Format::AVIF, quality: $q);
-        } elseif (str_ends_with($destination, '.png')) {
-            $encoded = $image->encodeUsingFormat(Format::PNG);
-        } elseif (str_ends_with($destination, '.gif')) {
-            $encoded = $image->encodeUsingFormat(Format::GIF);
-        } else {
-            $encoded = $image->encodeUsingFormat(Format::JPEG, quality: $baseQuality);
-        }
+        $quality = match ($format) {
+            Format::WEBP => max(0, min(100, (int) ($this->imageSizeOptions['webp']['quality'] ?? $baseQuality))),
+            Format::AVIF => max(0, min(100, (int) ($this->imageSizeOptions['avif']['quality'] ?? $baseQuality))),
+            default => $baseQuality,
+        };
 
+        $encoded = $image->encodeUsingFormat($format, quality: $quality);
         $encoded->save($destination);
 
         if ($source instanceof Pageimage) {
@@ -1235,23 +1296,30 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
         }
 
-        // Greyscale (e.g. -gr)
-        if (!empty($options['greyscale']) || !empty($options['grayscale'])) $parts[] = 'gre';
-
-        // Flop (e.g. -flop)
-        if (!empty($options['flop'])) $parts[] = 'flop';
+        // Grayscale (e.g. -gre)
+        if (!empty($options['grayscale'])) {
+            $parts[] = 'gre';
+        }
 
         // Blur (e.g. -blu10)
-        if (!empty($options['blur'])) $parts[] = 'blu' . (int) $options['blur'];
+        if (!empty($options['blur'])) {
+            $parts[] = 'blu' . (int) $options['blur'];
+        }
 
         // Sharpen (e.g. -sha10)
-        if (!empty($options['sharpen'])) $parts[] = 'sha' . (int) $options['sharpen'];
+        if (!empty($options['sharpen'])) {
+            $parts[] = 'sha' . (int) $options['sharpen'];
+        }
 
         // Invert (e.g. -inv)
-        if (!empty($options['invert'])) $parts[] = 'inv';
+        if (!empty($options['invert'])) {
+            $parts[] = 'inv';
+        }
 
         // Pixelate (e.g. -pix10)
-        if (!empty($options['pixelate'])) $parts[] = 'pix' . (int) $options['pixelate'];
+        if (!empty($options['pixelate'])) {
+            $parts[] = 'pix' . (int) $options['pixelate'];
+        }
 
         return '.' . $width . 'x' . $height . (!empty($parts) ? '-' . implode('-', $parts) : '');
     }
@@ -1287,36 +1355,34 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         return [
             max(-100, min(100, (int) $red)),
             max(-100, min(100, (int) $green)),
-            max(-100, min(100, (int) $blue))
+            max(-100, min(100, (int) $blue)),
         ];
     }
 
     /**
-     * Maps Focus Point percentages to Intervention v4 alignment positions.
+     * Maps Focus Point percentages to Intervention v4.4 Alignment enum cases.
      * 
      * @param array $focus [top%, left%] e.g., [20, 50]
-     * @return string
+     * @return Alignment
      */
-    protected function mapFocusToPosition(array $focus): string
+    protected function mapFocusToPosition(array $focus): Alignment
     {
         $top = (float) ($focus[0] ?? 50);
         $left = (float) ($focus[1] ?? 50);
 
-        // Y
-        $v = 'center';
-        if ($top < 33) $v = 'top';
-        elseif ($top > 66) $v = 'bottom';
+        $vertical = match (true) {
+            $top < 33 => Alignment::TOP,
+            $top > 66 => Alignment::BOTTOM,
+            default => Alignment::CENTER,
+        };
 
-        // X
-        $h = 'center';
-        if ($left < 33) $h = 'left';
-        elseif ($left > 66) $h = 'right';
+        $horizontal = match (true) {
+            $left < 33 => Alignment::LEFT,
+            $left > 66 => Alignment::RIGHT,
+            default => Alignment::CENTER,
+        };
 
-        if ($v === 'center' && $h === 'center') return 'center';
-        if ($v === 'center') return $h; // left, right
-        if ($h === 'center') return $v; // top, bottom
-
-        return "$v-$h"; // top-left, bottom-right etc.
+        return $vertical->alignHorizontally($horizontal);
     }
 
     /**

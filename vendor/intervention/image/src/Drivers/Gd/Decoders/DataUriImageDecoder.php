@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace Intervention\Image\Drivers\Gd\Decoders;
 
+use Intervention\Image\DataUri;
 use Intervention\Image\Exceptions\DecoderException;
-use Intervention\Image\Interfaces\ColorInterface;
+use Intervention\Image\Exceptions\DriverException;
+use Intervention\Image\Exceptions\ImageDecoderException;
+use Intervention\Image\Exceptions\InvalidArgumentException;
+use Intervention\Image\Exceptions\NotSupportedException;
+use Intervention\Image\Exceptions\StateException;
 use Intervention\Image\Interfaces\DecoderInterface;
 use Intervention\Image\Interfaces\ImageInterface;
 
@@ -14,24 +19,44 @@ class DataUriImageDecoder extends BinaryImageDecoder implements DecoderInterface
     /**
      * {@inheritdoc}
      *
-     * @see DecoderInterface::decode()
+     * @see DecoderInterface::supports()
      */
-    public function decode(mixed $input): ImageInterface|ColorInterface
+    public function supports(mixed $input): bool
     {
+        return $this->couldBeDataUrl($input);
+    }
+
+    /**
+     * {@inheritdoc}
+     *
+     * @see DecoderInterface::decode()
+     *
+     * @throws InvalidArgumentException
+     * @throws DriverException
+     * @throws ImageDecoderException
+     * @throws StateException
+     * @throws NotSupportedException
+     */
+    public function decode(mixed $input): ImageInterface
+    {
+        if ($input instanceof DataUri) {
+            try {
+                return parent::decode($input->data());
+            } catch (DecoderException) {
+                throw new ImageDecoderException('Data Uri contains unsupported image type');
+            }
+        }
+
         if (!is_string($input)) {
-            throw new DecoderException('Unable to decode input');
+            throw new InvalidArgumentException(
+                'Image source must be data uri scheme of type string or ' . DataUri::class,
+            );
         }
 
-        $uri = $this->parseDataUri($input);
-
-        if (!$uri->isValid()) {
-            throw new DecoderException('Unable to decode input');
+        try {
+            return parent::decode(DataUri::parse($input)->data());
+        } catch (DecoderException) {
+            throw new ImageDecoderException('Data Uri contains unsupported image type');
         }
-
-        if ($uri->isBase64Encoded()) {
-            return parent::decode(base64_decode($uri->data()));
-        }
-
-        return parent::decode(urldecode($uri->data()));
     }
 }

@@ -19,7 +19,7 @@
   ],
   "require": {
     "php": ">=8.3",
-    "intervention/image": "^4.3"
+    "intervention/image": "^4.4"
   },
   "config": {
     "process-timeout": 0,

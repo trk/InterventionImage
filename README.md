@@ -1,6 +1,6 @@
 # Intervention Image Engine for ProcessWire
 
-A high-performance responsive image engine for ProcessWire powered by [Intervention Image v3](https://image.intervention.io/v3). This module replaces the default ProcessWire image sizing engine with a modern, feature-rich alternative that supports **delayed rendering**, **next-gen formats (WebP/AVIF)**, and **fluid responsive sizing**.
+A high-performance responsive image engine for ProcessWire powered by [Intervention Image v4](https://image.intervention.io/v4). This module replaces the default ProcessWire image sizing engine with a modern, feature-rich alternative that supports **delayed rendering**, **next-gen formats (WebP/AVIF)**, and **fluid responsive sizing**.
 
 ## Features
 
@@ -8,13 +8,13 @@ A high-performance responsive image engine for ProcessWire powered by [Intervent
 - **Modern Formats**: Native support for WebP and AVIF output.
 - **Driver Agnostic**: Automatically selects the best available driver (Imagick or GD).
 - **Responsive System**: Define centralized breakpoints, aspect ratios, and column widths.
-- **Smart Cropping**: Supports focal point cropping (via standard PW options) and position mapping.
+- **Smart Cropping**: Supports focal point cropping (via standard PW options) and position mapping using `Intervention\Image\Alignment`.
 - **Srcset Generation**: Automatically generates `srcset` attributes based on configurable scaling factors.
 
 ## Requirements
 
 - ProcessWire 3.x
-- PHP 8.1+
+- PHP 8.3+
 - FileInfo Extension
 - **Imagick** (Recommended for AVIF) or **GD** Library
 
@@ -88,7 +88,7 @@ echo $page->image->render('landscape', [
     'brightness' => 15,           // Adjust brightness
     'contrast' => 10,             // Adjust contrast
     'colorize' => '255, 0, 0',    // Or as array [255, 0, 0] / ['red' => 255]
-    'greyscale' => true,          // Convert to grayscale
+    'grayscale' => true,          // Convert to grayscale
     'invert' => true,             // Invert colors
 ]);
 ```
