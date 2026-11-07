@@ -1,6 +1,6 @@
 {
   "name": "trk/intervention-image",
-  "description": "High-performance ProcessWire image engine powered by Intervention Image v4.4 with delayed rendering, WebP/AVIF output, focal-point zoom cropping, LQIP, and ColorExtractor hooks.",
+  "description": "High-performance ProcessWire image engine powered by Intervention Image v4.4 (GD, Imagick, libvips) with delayed rendering, WebP/AVIF output, focal-point zoom cropping, LQIP, ColorExtractor, and perceptual ImageHash hooks.",
   "type": "pw-module",
   "keywords": [
     "processwire",
@@ -8,6 +8,8 @@
     "wire",
     "intervention",
     "image",
+    "vips",
+    "imagehash",
     "webp",
     "avif",
     "lqip",
@@ -24,7 +26,9 @@
   ],
   "require": {
     "php": ">=8.3",
-    "intervention/image": "^4.4"
+    "intervention/image": "^4.4",
+    "intervention/image-driver-vips": "^4.2",
+    "intervention/imagehash": "^1.0"
   },
   "config": {
     "process-timeout": 0,

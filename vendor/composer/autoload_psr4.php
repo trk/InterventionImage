@@ -6,6 +6,10 @@ $vendorDir = dirname(__DIR__);
 $baseDir = dirname($vendorDir);
 
 return array(
+    'Psr\\Log\\' => array($vendorDir . '/psr/log/src'),
+    'Jcupitt\\Vips\\' => array($vendorDir . '/jcupitt/vips/src'),
+    'Intervention\\Image\\Drivers\\Vips\\' => array($vendorDir . '/intervention/image-driver-vips/src'),
     'Intervention\\Image\\' => array($vendorDir . '/intervention/image/src'),
+    'Intervention\\ImageHash\\' => array($vendorDir . '/intervention/imagehash/src'),
     'Intervention\\Gif\\' => array($vendorDir . '/intervention/gif/src'),
 );

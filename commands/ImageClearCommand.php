@@ -21,11 +21,12 @@ final class ImageClearCommand extends Command
 	{
 		$this
 			->setName('image:clear')
-			->setDescription('Clear generated InterventionImage variations, LQIP placeholders (.lqip.webp), color caches (.colors.json), and .queue files.')
+			->setDescription('Clear generated InterventionImage variations, LQIP placeholders (.lqip.webp), color caches (.colors.json), perceptual hashes (.hashes.json), and .queue files.')
 			->addOption('page', 'p', InputOption::VALUE_REQUIRED, 'Restrict cleanup to a specific Page ID or path')
 			->addOption('variations-only', null, InputOption::VALUE_NONE, 'Only remove generated image variation files (.WxH.*)')
 			->addOption('lqip-only', null, InputOption::VALUE_NONE, 'Only remove .lqip.webp placeholder files')
 			->addOption('colors-only', null, InputOption::VALUE_NONE, 'Only remove .colors.json metadata cache files')
+			->addOption('hashes-only', null, InputOption::VALUE_NONE, 'Only remove .hashes.json perceptual hash cache files')
 			->addOption('queue-only', null, InputOption::VALUE_NONE, 'Only remove .queue delayed variation files')
 			->addOption('dry-run', null, InputOption::VALUE_NONE, 'Preview files that would be deleted without removing them');
 	}
@@ -47,14 +48,16 @@ final class ImageClearCommand extends Command
 		$variationsOnly = (bool) $input->getOption('variations-only');
 		$lqipOnly = (bool) $input->getOption('lqip-only');
 		$colorsOnly = (bool) $input->getOption('colors-only');
+		$hashesOnly = (bool) $input->getOption('hashes-only');
 		$queueOnly = (bool) $input->getOption('queue-only');
 		$dryRun = (bool) $input->getOption('dry-run');
 
 		$options = ['dryRun' => $dryRun];
-		if ($variationsOnly || $lqipOnly || $colorsOnly || $queueOnly) {
+		if ($variationsOnly || $lqipOnly || $colorsOnly || $hashesOnly || $queueOnly) {
 			$options['variations'] = $variationsOnly;
 			$options['lqip'] = $lqipOnly;
 			$options['colors'] = $colorsOnly;
+			$options['hashes'] = $hashesOnly;
 			$options['queue'] = $queueOnly;
 		}
 
@@ -73,6 +76,7 @@ final class ImageClearCommand extends Command
 				['Image Variations (.WxH.*)', (string) $counts['variations']],
 				['LQIP Placeholders (.lqip.webp)', (string) $counts['lqip']],
 				['Color Metadata (.colors.json)', (string) $counts['colors']],
+				['Perceptual Hashes (.hashes.json)', (string) $counts['hashes']],
 				['Delayed Queue (.queue)', (string) $counts['queue']],
 			]
 		);

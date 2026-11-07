@@ -1,0 +1,59 @@
+{
+    "name": "intervention/image-driver-vips",
+    "description": "libvips driver for Intervention Image",
+    "homepage": "https://image.intervention.io/",
+    "keywords": [
+        "image",
+        "vips",
+        "libvips"
+    ],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Oliver Vogel",
+            "email": "oliver@intervention.io",
+            "homepage": "https://intervention.io/"
+        },
+        {
+            "name": "Thomas Picquet",
+            "email": "thomas@sctr.net"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "intervention/image": "^4.2",
+        "jcupitt/vips": "^2.6"
+    },
+    "require-dev": {
+        "ext-fileinfo": "*",
+        "phpunit/phpunit": "^12.0",
+        "phpstan/phpstan": "^2",
+        "intervention/coding-standard": "^1",
+        "psr/http-message": "^2"
+    },
+    "autoload": {
+        "psr-4": {
+            "Intervention\\Image\\Drivers\\Vips\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Intervention\\Image\\Drivers\\Vips\\Tests\\": "tests"
+        }
+    },
+    "scripts": {
+        "test": [
+            "@phpunit",
+            "@phpcs",
+            "@phpstan"
+        ],
+        "phpstan": "phpstan analyse --ansi",
+        "phpunit": "phpunit",
+        "phpcs": "phpcs"
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        }
+    }
+}

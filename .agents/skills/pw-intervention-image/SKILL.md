@@ -1,10 +1,10 @@
 ---
 name: pw-intervention-image
-description: "Use when resizing, cropping, containing, watermarking, extracting dominant colors/palettes/Vibrant-Muted themes/LQIP, or rendering responsive HTML/srcset for ProcessWire Pageimage objects via InterventionImage (Intervention Image v4.4), or when running CLI queue and variation cleanup tasks."
+description: "Use when resizing, cropping, containing, watermarking, extracting dominant colors/palettes/Vibrant-Muted themes/LQIP, computing perceptual image hashes (dhash, phash, ahash, bhash) or similarity distance, or rendering responsive HTML/srcset for ProcessWire Pageimage objects via InterventionImage (Intervention Image v4.4 with Vips/Imagick/GD), or when running CLI queue and variation cleanup tasks."
 risk: safe
 source: processwire-boost
 metadata:
-  version: 110
+  version: 120
   intervention-image-version: "^4.4"
   processwire-version: ">=3.0.271"
   php-version: ">=8.3"
@@ -22,24 +22,27 @@ metadata:
     - image->dominantColor
     - image->palette
     - image->colorTheme
+    - image->imageHash
+    - image->hashDistance
+    - image->isSimilar
 ---
 
 # ProcessWire InterventionImage (v4.4)
 
-Integrate Intervention Image v4.4 into ProcessWire's native `Pageimage` variation pipeline, responsive `<picture>` / `srcset` renderer, `ColorExtractor` engine, and CLI queue runner.
+Integrate Intervention Image v4.4 (`Vips`, `Imagick`, `GD`), `ColorExtractor`, and `Intervention\ImageHash` into ProcessWire's native `Pageimage` variation pipeline, responsive `<picture>` / `srcset` renderer, and CLI queue runner.
 
-## When to Use
+## Context Pointers
 
-- Resizing, cropping, containing/padding, or watermarking `Pageimage` instances on the frontend.
-- Rendering responsive `<img>` or `<picture>` elements with AVIF/WebP `<source>` sets, factor-based `srcset`, and inline Base64 LQIP placeholders.
-- Extracting dominant hex colors, palettes, or `VibrantMuted` color themes (`vibrant`, `muted`, `darkVibrant`, `darkMuted`, `lightVibrant`, `lightMuted`) from a `Pageimage`.
-- Processing delayed `.queue` image variations or cleaning up generated variations/caches via `vendor/bin/wire`.
+- **API Reference (`site/modules/InterventionImage/API.md`)**: Read when calling `InterventionImage` module methods (`manager()`, `calculate()`, `inspectQueue()`, `processQueue()`, `clearVariations()`) or checking exact `Pageimage` hook return signatures.
+- **Domain Glossary (`site/modules/InterventionImage/GLOSSARY.md`)**: Read when naming variables, array keys, or docblocks involving `Variation`, `Delayed Queue`, `LQIP`, `Color Metadata`, `Perceptual Hash`, `Hamming Distance`, or `Sidecar Cache`.
+- **ADR-0001 Driver Fallback (`site/modules/InterventionImage/docs/adr/0001-vips-driver-health-fallback.md`)**: Read when modifying driver selection, `isDriverHealthy()`, or `ffi.enable=preload` SAPI diagnostics.
+- **ADR-0002 Hash Sidecar (`site/modules/InterventionImage/docs/adr/0002-perceptual-hash-sidecar-cache.md`)**: Read when modifying `.hashes.json` persistence, hash strategies (`dhash`, `phash`, `ahash`, `bhash`), or cache invalidation.
 
 ## Core Concepts
 
 ### 1. Pageimage Variation Hooks
 
-Operate exclusively through `Pageimage` hooks so variations use ProcessWire's deterministic suffix scheme (`createSuffix()`) and are automatically deleted when the parent `Pagefile` is removed:
+Operate through `Pageimage` hooks so variations use ProcessWire's deterministic suffix scheme (`createSuffix()`) and are automatically deleted when the parent `Pagefile` is removed:
 
 ```php
 <?php
@@ -50,7 +53,7 @@ namespace ProcessWire;
 
 /** @var Pageimage $image */
 
-// 1. Cover / crop to exact dimensions (uses ProcessWire focal point & zoom automatically)
+// 1. Cover / crop to exact dimensions (uses ProcessWire focal point & zoom automatically on center crops)
 $cover = $image->size(800, 600, [
 	'quality' => 85,
 	'format' => 'webp',
@@ -66,7 +69,7 @@ $scaled = $image->size(1200, 0, [
 	'upscaling' => false,
 ]);
 
-// 4. Explicit pixel-coordinate crop: crop(int $x, int $y, int|string $width, int|array $height = 0, array $options = [])
+// 4. Explicit pixel-coordinate crop: crop(int $x, int $y, int|string $width, int|string|array $height = 0, array $options = [])
 $cropped = $image->crop(120, 80, 600, 400, ['format' => 'avif']);
 
 // 5. Fit & pad inside exact box without cropping: contain($width, $height = null, $optionsOrBgHex = [])
@@ -84,17 +87,15 @@ Pass any combination of these keys to `$image->size()`, `$image->crop()`, `$imag
 
 | Category | Option Keys & Types | Behavior |
 |---|---|---|
-| **Geometry & Crop** | `cropping` (`bool\|string\|array\|Alignment`, default `'center'`), `upscaling` (`bool`), `contain` (`bool`), `focus` (`array{top?: float, left?: float, zoom?: int}`) | `cropping: true\|'center'` uses focal point + zoom when present; `false` scales proportionally; `'contain'` pads to exact box; compass strings (`'north'`, `'southeast'`), `'x100y200'`, or `['25%', '50%']` align crop. |
+| **Geometry & Crop** | `cropping` (`bool\|string\|array\|Alignment`, default `'center'`), `upscaling` (`bool`), `contain` (`bool`), `focus` (`array{top?: float, left?: float, zoom?: int}`) | `cropping: true\|'center'` uses focal point + zoom when present; `false` scales proportionally; `'contain'` pads to exact box; compass strings (`'north'`, `'southeast'`), `'x100y200'`, or `[100, 200]` / `['25%', '50%']` align crop and override focal point. |
 | **Canvas & Trim** | `background` (`string`, e.g. `'ffffff'`), `fillTransparent` (`bool`), `trim` (`bool\|int`, `0..100`) | `trim` strips uniform borders before sizing. `fillTransparent: true` composites transparent pixels over `background`. |
 | **Orientation** | `rotate` (`float`), `flip` (`'h'\|'v'\|Direction`) | Rotates by degrees and reflects horizontally or vertically prior to sizing. |
-| **Filters** | `sharpening` (`'none'\|'soft'\|'medium'\|'strong'`), `sharpen` (`0..100`), `blur` (`0..100`), `brightness` (`-100..100`), `contrast` (`-100..100`), `gamma` (`0.1..10.0`), `pixelate` (`int`), `colorize` (`'r,g,b'\|int[]`), `grayscale` (`bool`), `invert` (`bool`), `reduceColors` (`1..256`) | Executed in deterministic order after geometry changes. `reduceColors` preserves TrueColor buffers for WebP/AVIF on GD. |
+| **Filters** | `sharpening` (`'none'\|'soft'\|'medium'\|'strong'`), `sharpen` (`0..100`, overrides `sharpening`), `blur` (`0..100`), `brightness` (`-100..100`), `contrast` (`-100..100`), `gamma` (`0.1..10.0`), `pixelate` (`int`), `colorize` (`'r,g,b'\|int[]`), `grayscale` (`bool`), `invert` (`bool`), `reduceColors` (`1..256`) | Executed in deterministic order after geometry changes. `reduceColors` supports Vips, Imagick, and GD (preserving TrueColor buffers for WebP/AVIF on GD). |
 | **Watermark** | `insert` (`Pageimage\|string\|array`) | Array keys: `element` (path or `Pageimage`), `position` (`'top-left'`, `'bottom-right'`, etc.), `offset_x`, `offset_y`, `opacity` (`0..100`). |
-| **Custom Modifiers** | `modifiers` (`array`) | Accepts Intervention v4.4 `ModifierInterface` instances, `ModifierInterface` class-strings, or closures `fn(ImageInterface $img): ImageInterface`. |
+| **Custom Modifiers** | `modifiers` (`array`) | Accepts Intervention v4.4 `ModifierInterface` instances, `ModifierInterface` class-strings, or typed closures `static fn(ImageInterface $img): ImageInterface => ...`. |
 | **Encoding & Queue** | `format` (`'webp'\|'avif'\|'jpg'\|'png'\|'gif'`), `quality` (`0..100`), `strip` (`bool`), `progressive` (`bool`), `interlaced` (`bool`), `delayed` (`bool`), `suffix` (`string\|string[]`), `hidpi` (`bool`) | `delayed: true` writes a `.queue` sidecar file and renders on first request (`handlePageNotFound`) or via `wire image:queue`. |
 
-### 3. Responsive Markup, LQIP & ColorExtractor Hooks
-
-Use built-in markup and color hooks instead of manual loops:
+### 3. Responsive Markup, LQIP, ColorExtractor & Perceptual Hash Hooks
 
 ```php
 <?php
@@ -109,6 +110,7 @@ namespace ProcessWire;
 echo $image->render('landscape', [
 	'sizes' => '(max-width: 1200px) 100vw, 1200px',
 	'loading' => 'eager',   // 'eager' | 'lazy' | bool
+	'decoding' => 'async',  // 'sync' | 'async' | 'auto'
 	'isFirst' => true,      // Sets fetchpriority="high"
 	'class' => 'hero-banner',
 ]);
@@ -129,11 +131,14 @@ $lqipUri = $image->lqip();
 $dominant = $image->dominantColor(true); // '#1e293b'
 $palette  = $image->palette(6, true);    // ['#1e293b', '#38bdf8', ...]
 $theme    = $image->colorTheme(true);    // ['vibrant' => '#...', 'muted' => '#...', 'darkVibrant' => '#...', 'darkMuted' => '#...', 'lightVibrant' => '#...', 'lightMuted' => '#...']
+
+// Perceptual ImageHash hooks (cached in {basename}.hashes.json; strategies: 'dhash' [default, 16 hex], 'phash' [16 hex], 'ahash' [16 hex], 'bhash' [64 hex])
+$hash     = $image->imageHash('dhash');                      // '8f9e9d8b0f0f1f07'
+$distance = $image->hashDistance($otherImageOrHex, 'dhash'); // int Hamming distance (0 = identical)
+$similar  = $image->isSimilar($otherImageOrHex, 5, 'dhash'); // bool (true when distance <= 5)
 ```
 
-### 4. Variation Cleanup (PHP Hooks & CLI Commands)
-
-Clean up variations and sidecar caches (`.lqip.webp`, `.colors.json`, `.queue`) programmatically or via `processwire-console`:
+### 4. Queue Management & Variation Cleanup (PHP Hooks & CLI Commands)
 
 ```php
 <?php
@@ -147,10 +152,14 @@ $stats = $page->clearImageVariations();
 
 // Clear site-wide (or pass Page|int|string as first argument)
 /** @var InterventionImage $imgEngine */
-$imgEngine = $modules->get('InterventionImage');
-$stats = $imgEngine->clearVariations(null, ['variations' => true, 'lqip' => true, 'dryRun' => false]);
+$imgEngine = $this->wire()->modules->get('InterventionImage');
+$stats = $imgEngine->clearVariations(null, ['variations' => true, 'lqip' => true, 'hashes' => true, 'dryRun' => false]);
 
-// Native Pageimage::removeVariations() also deletes .lqip.webp, .colors.json, and .queue for that image
+// Inspect or process pending .queue sidecars programmatically
+$inspection = $imgEngine->inspectQueue($page, 50);
+$queueStats = $imgEngine->processQueue($page, 50);
+
+// Native Pageimage::removeVariations() also deletes .lqip.webp, .colors.json, .hashes.json, and .queue for that image
 $image->removeVariations();
 ```
 
@@ -161,26 +170,22 @@ php vendor/bin/wire image:queue --limit=50
 php vendor/bin/wire image:queue --page=1024
 php vendor/bin/wire image:queue --clear
 
-# Preview or remove generated variations, .lqip.webp, .colors.json, and .queue files
+# Preview or remove generated variations, .lqip.webp, .colors.json, .hashes.json, and .queue files
 php vendor/bin/wire image:clear --dry-run
 php vendor/bin/wire image:clear --page=1024
 php vendor/bin/wire image:clear --variations-only
 php vendor/bin/wire image:clear --lqip-only
 php vendor/bin/wire image:clear --colors-only
+php vendor/bin/wire image:clear --hashes-only
+php vendor/bin/wire image:clear --queue-only
 ```
 
-## Anti-Patterns & Loophole Closing
+## Target Patterns & Guardrails
 
-- ❌ **NEVER use Intervention Image v2/v3 methods (`$manager->read()`, `Image::make()`, `greyscale()`, `flop()`, `fit()`, `resizeCanvas()`, `pickColor()`).**
-  - ✅ This module runs exclusively on **Intervention Image v4.4**: `decodePath()` / `decode()`, `grayscale()`, `flip()`, `cover()` / `coverDown()`, `contain()` / `containDown()`, `colorAt()`, and `encodeUsingFormat(Format::WEBP, quality: 85)`.
-- ❌ **NEVER pass a raw `'800x600'` string as the first argument to `$image->size('800x600')`.**
-  - ✅ ProcessWire's non-hookable `Pageimage::size()` wrapper treats any non-numeric string as a named preset and throws `Unknown image size` if it is not in `$config->imageSizes`. Pass integer dimensions `$image->size(800, 600, $options)` or a configured preset key `$image->size('landscape', $options)`.
-- ❌ **NEVER pass `crop($width, $height)` expecting the first two arguments of `Pageimage::crop()` to be dimensions.**
-  - ✅ `Pageimage::crop($x, $y, $width, $height = 0, $options = [])` takes pixel coordinates `($x, $y)` first, matching ProcessWire's native `Pageimage::crop()` contract. For alignment-based cropping by dimensions, call `$image->size($width, $height, ['cropping' => 'north'])`.
-- ❌ **NEVER build manual `<picture>` loops by calling `$image->size()` repeatedly in templates when responsive markup is needed.**
-  - ✅ Call `$image->render($width, $height, $options)` or `$image->attrs($width, $height, $options)` / `$image->srcset($width, $height, $options)`.
-- ❌ **NEVER recompute image colors on every request with raw `imagecolorat()` / GD loops.**
-  - ✅ Call `$image->dominantColor()`, `$image->palette($limit)`, or `$image->colorTheme()`, which use Intervention Image v4.4 `ColorExtractor` and cache results in `{basename}.colors.json`.
+- **Target v4.4 Manager & Image APIs**: Call `decodePath()` / `decode()`, `grayscale()`, `flip()`, `cover()` / `coverDown()`, `contain()` / `containDown()`, `colorAt()`, and `encodeUsingFormat(Format::WEBP, quality: 85)` (replaces legacy v2/v3 `read()`, `make()`, `greyscale()`, `flop()`, `fit()`, `resizeCanvas()`, `pickColor()`).
+- **Pass integers or registered preset names to `Pageimage::size()`**: Call `$image->size(800, 600, $options)` or `$image->size('landscape', $options)` because ProcessWire's upstream `Pageimage::size()` wrapper resolves string first arguments against `$config->imageSizes`.
+- **Pass pixel coordinates `($x, $y)` first to `Pageimage::crop()`**: Call `$image->crop($x, $y, $width, $height, $options)` for coordinate crops, and `$image->size($width, $height, ['cropping' => 'north'])` for compass-aligned dimension crops.
+- **Delegate responsive markup and color extraction to hooks**: Call `$image->render()`, `$image->attrs()`, `$image->srcset()`, `$image->dominantColor()`, `$image->palette()`, `$image->colorTheme()`, and `$image->imageHash()` so results are cached in sidecar files.
 
 ## Related Skills
 

@@ -9,11 +9,14 @@ use ProcessWire\Pageimages;
 use function ProcessWire\wire;
 
 /**
- * Locate a real raster Pageimage in the ProcessWire installation for integration testing.
+ * Locate a real raster Pageimage in the ProcessWire installation for integration testing,
+ * or provision a temporary synthetic Pageimage on the root page when no FieldtypeImage upload exists.
  */
 function findTestablePageimage(): ?Pageimage
 {
-	$pages = wire('pages')->find('limit=50, include=all');
+	static $syntheticImage = null;
+
+	$pages = wire('pages')->find('limit=100, include=all');
 	foreach ($pages as $p) {
 		foreach ($p->fields as $f) {
 			if ($f->type instanceof \ProcessWire\FieldtypeImage) {
@@ -25,8 +28,46 @@ function findTestablePageimage(): ?Pageimage
 			}
 		}
 	}
-	return null;
+
+	if ($syntheticImage instanceof Pageimage && file_exists($syntheticImage->filename)) {
+		return $syntheticImage;
+	}
+
+	$rootPage = wire('pages')->get(1);
+	if (!$rootPage || !$rootPage->id) {
+		return null;
+	}
+
+	/** @var InterventionImage $module */
+	$module = wire('modules')->get('InterventionImage');
+	$dir = $rootPage->filesManager()->path();
+	if (!is_dir($dir)) {
+		wire('files')->mkdir($dir, true);
+	}
+
+	$syntheticPath = $dir . 'pest_synthetic_fixture.png';
+	if (!file_exists($syntheticPath)) {
+		$canvas = $module->manager()->createImage(640, 480)->fill('2b5c8f');
+		$canvas->encodeUsingFormat(\Intervention\Image\Format::PNG)->save($syntheticPath);
+	}
+
+	$pageimages = new Pageimages($rootPage);
+	$syntheticImage = new Pageimage($pageimages, $syntheticPath);
+
+	return $syntheticImage;
 }
+
+afterAll(function (): void {
+	$rootPage = wire('pages')->get(1);
+	if ($rootPage && $rootPage->id) {
+		$dir = $rootPage->filesManager()->path();
+		foreach (glob($dir . 'pest_synthetic_fixture*') ?: [] as $file) {
+			if (is_file($file)) {
+				@unlink($file);
+			}
+		}
+	}
+});
 
 test('manager returns configured Intervention Image v4.4 ImageManager instance', function (): void {
 	/** @var InterventionImage $module */
@@ -110,7 +151,7 @@ test('Pageimage size, crop, contain, and effects hooks generate valid image vari
 			'format' => 'webp',
 			'suffix' => 'pestmod',
 			'modifiers' => [
-				static fn(\Intervention\Image\Interfaces\ImageInterface $img) => $img->invert(),
+				static fn(\Intervention\Image\Interfaces\ImageInterface $img): \Intervention\Image\Interfaces\ImageInterface => $img->invert(),
 			],
 		]);
 		$createdFiles[] = $customModified->filename;
@@ -195,6 +236,20 @@ test('lqip, dominantColor, palette, colorTheme, attrs, and render hooks return v
 	$html = $image->render(400, 300, ['class' => 'test-render']);
 	expect($html)->toContain('<img ')
 		->and($html)->toContain('test-render');
+
+	// Perceptual hash hooks (dhash + phash) & sidecar cache
+	$dhash = $image->imageHash('dhash');
+	$phash = $image->imageHash('phash');
+	expect($dhash)->toMatch('/^[0-9a-f]{16}$/i')
+		->and($phash)->toMatch('/^[0-9a-f]{16}$/i');
+
+	$source = $image->getOriginal() ?: $image;
+	$hashesFile = $source->pagefiles->path() . pathinfo($source->basename, PATHINFO_FILENAME) . '.hashes.json';
+	expect(file_exists($hashesFile))->toBeTrue();
+
+	expect($image->hashDistance($dhash, 'dhash'))->toBe(0)
+		->and($image->hashDistance($image, 'dhash'))->toBe(0)
+		->and($image->isSimilar($dhash, 5, 'dhash'))->toBeTrue();
 });
 
 test('clearVariations and Page::clearImageVariations support global and per-page cleanup', function (): void {
@@ -207,12 +262,13 @@ test('clearVariations and Page::clearImageVariations support global and per-page
 	$module = wire('modules')->get('InterventionImage');
 	$page = $image->page;
 
-	// Create a temporary variation on this page
+	// Create a temporary variation and hash cache on this page
 	$temp = $image->size(180, 120, [
 		'delayed' => false,
 		'format' => 'webp',
 		'suffix' => 'pestclear',
 	]);
+	$image->imageHash('dhash');
 
 	try {
 		expect(file_exists($temp->filename))->toBeTrue();
@@ -220,8 +276,9 @@ test('clearVariations and Page::clearImageVariations support global and per-page
 		// Dry-run via Page::clearImageVariations() hook
 		$pageStats = $page->clearImageVariations(['dryRun' => true]);
 		expect($pageStats)->toBeArray()
-			->and($pageStats)->toHaveKeys(['variations', 'lqip', 'colors', 'queue', 'total', 'bytes'])
-			->and($pageStats['variations'])->toBeGreaterThan(0);
+			->and($pageStats)->toHaveKeys(['variations', 'lqip', 'colors', 'hashes', 'queue', 'total', 'bytes'])
+			->and($pageStats['variations'])->toBeGreaterThan(0)
+			->and($pageStats['hashes'])->toBeGreaterThan(0);
 
 		// Dry-run globally via $module->clearVariations(null, ['dryRun' => true])
 		$globalStats = $module->clearVariations(null, ['dryRun' => true]);

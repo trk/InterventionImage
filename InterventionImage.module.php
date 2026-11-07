@@ -10,14 +10,24 @@ use Intervention\Image\Colors\Themes\VibrantMuted\Theme as VibrantMutedTheme;
 use Intervention\Image\Direction;
 use Intervention\Image\Drivers\Gd\Driver as GdDriver;
 use Intervention\Image\Drivers\Imagick\Driver as ImagickDriver;
+use Intervention\Image\Drivers\Vips\Driver as VipsDriver;
 use Intervention\Image\Format;
 use Intervention\Image\ImageManager;
+use Intervention\Image\Interfaces\AnalyzerInterface;
 use Intervention\Image\Interfaces\ColorInterface;
+use Intervention\Image\Interfaces\DriverInterface;
 use Intervention\Image\Interfaces\EncodedImageInterface;
 use Intervention\Image\Interfaces\ImageInterface;
 use Intervention\Image\Interfaces\ModifierInterface;
+use Intervention\ImageHash\Analyzers\ImageHashAnalyzer;
+use Intervention\ImageHash\Hash;
+use Intervention\ImageHash\Interfaces\StrategyInterface;
+use Intervention\ImageHash\Strategies\AverageStrategy;
+use Intervention\ImageHash\Strategies\BlockStrategy;
+use Intervention\ImageHash\Strategies\DifferenceStrategy;
+use Intervention\ImageHash\Strategies\PerceptualStrategy;
 
-if (!class_exists(ImageManager::class)) {
+if (!class_exists(ImageManager::class) || !class_exists(VipsDriver::class) || !class_exists(Hash::class)) {
     require __DIR__ . '/vendor/autoload.php';
 }
 
@@ -92,8 +102,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         return [
             'title' => __('Intervention Image Engine'),
-            'version' => 110,
-            'summary' => __('Replaces PW sizing with Intervention Image v4.4 + Delayed Rendering.'),
+            'version' => 120,
+            'summary' => __('Replaces PW sizing with Intervention Image v4.4 (GD, Imagick, libvips) + Delayed Rendering + Perceptual ImageHash.'),
             'author' => 'Iskender TOTOGLU @trk @ukyo',
             'href' => 'https://github.com/trk/InterventionImage',
             'autoload' => true,
@@ -141,7 +151,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         if ($this->inlineLazyload) {
             $this->addHookAfter('Page::render', function (HookEvent $event): void {
-                if ($this->wire()->config->admin || !is_string($event->return)) {
+                if ($event->wire()->config->admin || !is_string($event->return)) {
                     return;
                 }
                 $event->return = str_replace('</head>', $this->inlineLazyload() . '</head>', $event->return);
@@ -164,6 +174,11 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $this->addHookMethod('Pageimage::dominantColor', $this, 'hookDominantColor');
         $this->addHookMethod('Pageimage::palette', $this, 'hookPalette');
         $this->addHookMethod('Pageimage::colorTheme', $this, 'hookColorTheme');
+
+        // Perceptual hashing hooks (Intervention ImageHash v1.0)
+        $this->addHookMethod('Pageimage::imageHash', $this, 'hookImageHash');
+        $this->addHookMethod('Pageimage::hashDistance', $this, 'hookHashDistance');
+        $this->addHookMethod('Pageimage::isSimilar', $this, 'hookIsSimilar');
 
         // Cleanup hooks
         $this->addHookAfter('Pagefile::delete', $this, 'hookDeleteVariations');
@@ -213,6 +228,28 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     }
 
     /**
+     * Checks whether a given Intervention Image driver class is available and passes its runtime health check.
+     *
+     * @param class-string<DriverInterface> $driverClass
+     * @return bool
+     */
+    protected function isDriverHealthy(string $driverClass): bool
+    {
+        if (!class_exists($driverClass)) {
+            return false;
+        }
+
+        try {
+            /** @var DriverInterface $driver */
+            $driver = new $driverClass();
+            $driver->checkHealth();
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
      * Sets up the Intervention Image manager with fail-safe driver detection
      * Intervention Image v4 signature: ImageManager(string|DriverInterface $driver, ...$options)
      * 
@@ -222,27 +259,28 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     protected function setupIntervention(): void
     {
         $selectedDriver = $this->driver ?: 'auto';
+        $driverMap = [
+            'vips' => VipsDriver::class,
+            'imagick' => ImagickDriver::class,
+            'gd' => GdDriver::class,
+        ];
+
         $driverClass = null;
 
-        if ($selectedDriver === 'imagick') {
-            if (extension_loaded('imagick') && class_exists('Imagick')) {
-                $driverClass = ImagickDriver::class;
-            }
-        } elseif ($selectedDriver === 'gd') {
-            if (extension_loaded('gd')) {
-                $driverClass = GdDriver::class;
+        if (isset($driverMap[$selectedDriver]) && $this->isDriverHealthy($driverMap[$selectedDriver])) {
+            $driverClass = $driverMap[$selectedDriver];
+        }
+
+        if ($driverClass === null) {
+            foreach ([VipsDriver::class, ImagickDriver::class, GdDriver::class] as $candidateClass) {
+                if ($this->isDriverHealthy($candidateClass)) {
+                    $driverClass = $candidateClass;
+                    break;
+                }
             }
         }
 
-        if (!$driverClass) {
-            if (extension_loaded('gd')) {
-                $driverClass = GdDriver::class;
-            } elseif (extension_loaded('imagick') && class_exists('Imagick')) {
-                $driverClass = ImagickDriver::class;
-            }
-        }
-
-        if (!$driverClass) {
+        if ($driverClass === null) {
             throw new \RuntimeException('InterventionImage: No valid image driver found.');
         }
 
@@ -336,7 +374,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * Utility: Converts multiline config string to array
      * 
      * @param string $str
-     * @return array
+     * @return array{default: array<string, mixed>, data: array<string, array<string, mixed>>}
      */
     protected function multilineConfigToArray(string $str): array
     {
@@ -344,7 +382,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $lines = array_map('trim', explode("\n", str_replace("\r", "", $str)));
 
         foreach ($lines as $line) {
-            if (empty($line)) continue;
+            if (empty($line)) {
+                continue;
+            }
 
             $conf = ['value' => null, 'key' => null, 'label' => null];
 
@@ -389,7 +429,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * @param int|null $height
      * @param string|null $ratioKey
      * @param string|null $breakpointKey
-     * @return array
+     * @return array{width: int, height: int, maxWidth: int, ratio: float}
      */
     public function calculate(?int $width, ?int $height, ?string $ratioKey = null, ?string $breakpointKey = null): array
     {
@@ -411,15 +451,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $ratio = $ah / ($aw ?: 1.0);
 
         // If we have a specific ratio key, force that ratio
-        if ($ratioKey) {
-            if ($width > 0) {
-                $w = min($width, $maxWidth);
-                $h = (int) ceil($w * $ratio);
-            } else {
-                // If no width, use max width
-                $w = $maxWidth;
-                $h = (int) ceil($w * $ratio);
-            }
+        if ($ratioKey !== null && $ratioKey !== '') {
+            $w = ($width > 0) ? min($width, $maxWidth) : $maxWidth;
+            $h = (int) ceil($w * $ratio);
         } else {
             // No ratio key? behave standard
             $w = $width ?: $maxWidth;
@@ -435,34 +469,43 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     }
 
     /**
+     * Normalizes shorthand scalar options (string cropping, int quality, bool upscaling) into an associative array.
+     *
+     * @param mixed $options
+     * @return array<string, mixed>
+     */
+    protected function normalizeScalarOptions(mixed $options): array
+    {
+        return match (true) {
+            is_array($options) => $options,
+            is_string($options) => ['cropping' => $options],
+            is_int($options) => ['quality' => $options],
+            is_bool($options) => ['upscaling' => $options],
+            default => [],
+        };
+    }
+
+    /**
      * Resolves parameters
      * 
      * @param Pageimage $image
      * @param int|string|null $width
-     * @param int|array|null $height
-     * @param array|string|int|bool|null $options
+     * @param int|string|array<string, mixed>|null $height
+     * @param array<string, mixed>|string|int|bool|null $options
      * 
      * @return array{width: int, height: int, options: array<string, mixed>}
      */
-    protected function resolveParameters(Pageimage $image, int|string|null $width, int|array|null $height, array|string|int|bool|null $options = []): array
+    protected function resolveParameters(Pageimage $image, int|string|null $width, int|string|array|null $height, array|string|int|bool|null $options = []): array
     {
         /** @var Config $config */
         $config = $this->wire()->config;
-
-        if (is_string($options)) {
-            $options = ['cropping' => $options];
-        } elseif (is_int($options)) {
-            $options = ['quality' => $options];
-        } elseif (is_bool($options)) {
-            $options = ['upscaling' => $options];
-        }
-        if (!is_array($options)) {
-            $options = [];
-        }
+        $options = $this->normalizeScalarOptions($options);
 
         if (is_array($height)) {
             $options = array_merge($options, $height);
             $height = 0;
+        } elseif (is_string($height) && ctype_digit(trim($height))) {
+            $height = (int) trim($height);
         }
 
         if (!is_int($height)) {
@@ -488,14 +531,14 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $width = 0;
         }
 
-        if ($width > 0 && $height === 0) {
+        if (($width > 0 && $height === 0) || ($height > 0 && $width === 0)) {
             $iw = max(1, (int) $image->width);
             $ih = max(1, (int) $image->height);
-            $height = (int) round($width * ($ih / $iw));
-        } elseif ($height > 0 && $width === 0) {
-            $iw = max(1, (int) $image->width);
-            $ih = max(1, (int) $image->height);
-            $width = (int) round($height / ($ih / $iw));
+            if ($width > 0) {
+                $height = (int) round($width * ($ih / $iw));
+            } else {
+                $width = (int) round($height / ($ih / $iw));
+            }
         }
 
         if (!empty($options['insert'])) {
@@ -549,7 +592,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
         }
 
-        if ($image->hasFocus && (empty($options['focus']) || !is_array($options['focus']))) {
+        $croppingMode = $options['cropping'] ?? true;
+        $usesCenterFocus = ($croppingMode === true || $croppingMode === 'center') && !isset($options['crop_x'], $options['crop_y']) && empty($options['contain']);
+        if ($usesCenterFocus && $image->hasFocus && (empty($options['focus']) || !is_array($options['focus']))) {
             $focus = $image->focus();
             $options['focus'] = [
                 'top' => (float) ($focus['top'] ?? 50.0),
@@ -627,23 +672,29 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     public function hookCrop(HookEvent $event): void
     {
-        if ($this->wire()->config->admin) {
+        if ($event->wire()->config->admin) {
             return;
         }
 
         /** @var Pageimage $image */
         $image = $event->object;
 
-        $x = $event->arguments(0);
-        $y = $event->arguments(1);
+        $x = (int) $event->arguments(0);
+        $y = (int) $event->arguments(1);
+        $width = $event->arguments(2);
+        $height = $event->arguments(3);
+        $options = $this->normalizeScalarOptions($event->arguments(4));
 
-        $params = $this->resolveParameters($image, $event->arguments(2), $event->arguments(3), $event->arguments(4));
+        if (is_array($height)) {
+            $options = array_merge($height, $options);
+            $height = 0;
+        }
 
-        $params['options']['crop_x'] = $x;
-        $params['options']['crop_y'] = $y;
+        $options['crop_x'] = $x;
+        $options['crop_y'] = $y;
 
         $event->replace = true;
-        $event->return = $image->size($params['width'], $params['height'], $params['options']);
+        $event->return = $image->size($width, $height, $options);
     }
 
     /**
@@ -658,7 +709,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
          * @var Config $config
          * @var Pageimage $image
          */
-        $config = $this->wire()->config;
+        $config = $event->wire()->config;
         $image = $event->object;
 
         if ($this->isSvg($image)) {
@@ -687,10 +738,22 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         $event->replace = true;
+        $event->return = $this->createVariationInstance($image, $path);
+    }
+
+    /**
+     * Clones a Pageimage instance and binds it to the generated variation path.
+     *
+     * @param Pageimage $image
+     * @param string $path
+     * @return Pageimage
+     */
+    protected function createVariationInstance(Pageimage $image, string $path): Pageimage
+    {
         $variation = clone $image;
         $variation->setOriginal($image->getOriginal() ?: $image);
         $variation->setFilename($path);
-        $event->return = $variation;
+        return $variation;
     }
 
     /**
@@ -831,7 +894,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         } elseif (is_string($loading)) {
             $lazyload = strtolower($loading) !== 'eager';
         } else {
-            $lazyload = true;
+            $lazyload = (bool) $this->lazyload;
         }
         $first = !empty($options['isFirst']);
 
@@ -853,16 +916,25 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
         }
 
+        if ($this->lazyload && $lazyload && !in_array('lazyload', $attrs['class'], true)) {
+            $attrs['class'][] = 'lazyload';
+        }
+
         if ($this->lqip && !$isSvg) {
             $base64 = $this->generateLqip($image);
-            if ($base64) {
-                $attrs['class'][] = 'lazyload';
+            if ($base64 !== '') {
+                if (!in_array('lazyload', $attrs['class'], true)) {
+                    $attrs['class'][] = 'lazyload';
+                }
                 $attrs['style'][] = 'background-image: url("' . $base64 . '"); background-size: cover; background-position: center;';
             }
         }
 
         $attrs['loading'] = $lazyload ? 'lazy' : 'eager';
-        $attrs['decoding'] = $lazyload ? 'async' : 'sync';
+        $decoding = $options['decoding'] ?? null;
+        $attrs['decoding'] = is_string($decoding) && in_array($decoding, ['sync', 'async', 'auto'], true)
+            ? $decoding
+            : ($lazyload ? 'async' : 'sync');
 
         if ($first) {
             $attrs['fetchpriority'] = 'high';
@@ -943,6 +1015,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!is_string($urlPath) || $urlPath === '') {
             return;
         }
+        $rootUrl = $config->urls->root;
+        if ($rootUrl !== '/' && str_starts_with($urlPath, $rootUrl)) {
+            $urlPath = '/' . ltrim(substr($urlPath, strlen($rootUrl)), '/');
+        }
         $destination = $root . str_replace('/', DIRECTORY_SEPARATOR, $urlPath);
         $queueFile = $destination . '.queue';
 
@@ -980,7 +1056,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
             exit;
         } catch (\Throwable $e) {
-            $this->wire()->log->error('InterventionImage Error: ' . $e->getMessage());
+            $event->wire()->log->error('InterventionImage Error: ' . $e->getMessage());
         }
     }
 
@@ -1003,7 +1079,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             return null;
         }
 
-        $data = wireDecodeJSON((string) $files->fileGetContents($queueFile), true);
+        $data = $this->readSidecarJson($queueFile);
         if (!is_array($data) || empty($data['source'])) {
             $files->unlink($queueFile);
             return null;
@@ -1039,14 +1115,14 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     /**
      * Hook: Deletes variation and sidecar files when an original image is deleted or removeVariations() is called.
      * 
-     * @param HookEvent $e
+     * @param HookEvent $event
      */
-    public function hookDeleteVariations(HookEvent $e): void
+    public function hookDeleteVariations(HookEvent $event): void
     {
-        if (!$e->object instanceof Pageimage) {
+        if (!$event->object instanceof Pageimage) {
             return;
         }
-        $pi = pathinfo($e->object->filename);
+        $pi = pathinfo($event->object->filename);
         $prefix = $pi['filename'] . '.';
         $dir = $pi['dirname'];
 
@@ -1054,17 +1130,19 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             return;
         }
 
+        $files = $event->wire()->files;
+
         try {
             $it = new \FilesystemIterator($dir, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::CURRENT_AS_PATHNAME);
             foreach ($it as $path) {
                 $base = basename($path);
-                if (str_starts_with($base, $prefix) && $path !== $e->object->filename) {
-                    $this->wire()->files->unlink($path);
+                if (str_starts_with($base, $prefix) && $path !== $event->object->filename) {
+                    $files->unlink($path);
                 }
             }
-        } catch (\Throwable $ex) {
-            if ($this->wire()->config->debug) {
-                $this->wire()->log->warning('InterventionImage variation delete warning: ' . $ex->getMessage());
+        } catch (\Throwable $e) {
+            if ($event->wire()->config->debug) {
+                $event->wire()->log->warning('InterventionImage variation delete warning: ' . $e->getMessage());
             }
         }
     }
@@ -1084,43 +1162,160 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     }
 
     /**
+     * Resolves a target Page, Page ID, or sanitized Page path into its files directory,
+     * or returns the root site/assets/files directory when $page is null or empty.
+     *
+     * @param Page|int|string|null $page
+     * @return string
+     */
+    public function resolveTargetDirectory(Page|int|string|null $page = null): string
+    {
+        $config = $this->wire()->config;
+        if ($page === null || $page === '') {
+            return rtrim($config->paths->files, '/\\');
+        }
+
+        if (!$page instanceof Page) {
+            $pages = $this->wire()->pages;
+            $sanitizer = $this->wire()->sanitizer;
+            $raw = (string) $page;
+
+            $page = ctype_digit($raw)
+                ? $pages->get((int) $raw)
+                : $pages->get($sanitizer->selectorValue($raw));
+        }
+
+        if (!$page instanceof Page || !$page->id) {
+            throw new \InvalidArgumentException('InterventionImage: Target page not found.');
+        }
+
+        return rtrim($page->filesManager()->path(), '/\\');
+    }
+
+    /**
+     * Recursively finds all pending `.queue` sidecar files in the given directory.
+     *
+     * @param string $directory
+     * @return list<string>
+     */
+    protected function findQueueFiles(string $directory): array
+    {
+        if (!is_dir($directory)) {
+            return [];
+        }
+
+        $found = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS)
+        );
+
+        /** @var \SplFileInfo $fileInfo */
+        foreach ($iterator as $fileInfo) {
+            if ($fileInfo->isFile() && str_ends_with($fileInfo->getFilename(), '.queue')) {
+                $found[] = $fileInfo->getPathname();
+            }
+        }
+
+        sort($found);
+        return $found;
+    }
+
+    /**
+     * Inspects pending `.queue` sidecar files globally or for a specific Page.
+     *
+     * @param Page|int|string|null $page
+     * @param int $limit
+     * @return array{total: int, items: list<array{target: string, dimensions: string, source: string}>}
+     */
+    public function inspectQueue(Page|int|string|null $page = null, int $limit = 50): array
+    {
+        $baseDir = $this->resolveTargetDirectory($page);
+        $queueFiles = $this->findQueueFiles($baseDir);
+        $total = count($queueFiles);
+        $filesPath = $this->wire()->config->paths->files;
+
+        $items = [];
+        foreach (array_slice($queueFiles, 0, max(1, $limit)) as $qFile) {
+            $data = $this->readSidecarJson($qFile) ?? [];
+            $items[] = [
+                'target' => str_replace($filesPath, '', substr($qFile, 0, -6)),
+                'dimensions' => ($data['width'] ?? 0) . 'x' . ($data['height'] ?? 0),
+                'source' => (string) ($data['source'] ?? ''),
+            ];
+        }
+
+        return [
+            'total' => $total,
+            'items' => $items,
+        ];
+    }
+
+    /**
+     * Processes a batch of pending `.queue` sidecar files globally or for a specific Page.
+     *
+     * @param Page|int|string|null $page
+     * @param int $limit
+     * @return array{processed: int, failed: int, remaining: int, errors: list<string>}
+     */
+    public function processQueue(Page|int|string|null $page = null, int $limit = 50): array
+    {
+        $baseDir = $this->resolveTargetDirectory($page);
+        $queueFiles = $this->findQueueFiles($baseDir);
+        $batch = array_slice($queueFiles, 0, max(1, $limit));
+
+        $processed = 0;
+        $failed = 0;
+        $errors = [];
+
+        foreach ($batch as $qFile) {
+            try {
+                $encoded = $this->processQueueFile($qFile);
+                if ($encoded instanceof EncodedImageInterface) {
+                    $processed++;
+                } else {
+                    $failed++;
+                    $errors[] = basename($qFile) . ' — Queue payload or source file is invalid.';
+                }
+            } catch (\Throwable $e) {
+                $failed++;
+                $errors[] = basename($qFile) . ' — ' . $e->getMessage();
+            }
+        }
+
+        $remaining = count($this->findQueueFiles($baseDir));
+
+        return [
+            'processed' => $processed,
+            'failed' => $failed,
+            'remaining' => $remaining,
+            'errors' => $errors,
+        ];
+    }
+
+    /**
      * Clears generated image variations, LQIP files (.lqip.webp), color metadata (.colors.json),
-     * and delayed queue files (.queue) either globally ($page = null) or for a specific Page.
+     * perceptual hash caches (.hashes.json), and delayed queue files (.queue) either globally ($page = null)
+     * or for a specific Page.
      *
      * @param Page|int|string|null $page Page object, Page ID, Page path, or null for all pages
-     * @param array{variations?: bool, lqip?: bool, colors?: bool, queue?: bool, dryRun?: bool} $options
-     * @return array{variations: int, lqip: int, colors: int, queue: int, total: int, bytes: int}
+     * @param array{variations?: bool, lqip?: bool, colors?: bool, hashes?: bool, queue?: bool, dryRun?: bool} $options
+     * @return array{variations: int, lqip: int, colors: int, hashes: int, queue: int, total: int, bytes: int}
      */
     public function clearVariations(Page|int|string|null $page = null, array $options = []): array
     {
-        $config = $this->wire()->config;
         $files = $this->wire()->files;
-        $pages = $this->wire()->pages;
 
         $counts = [
             'variations' => 0,
             'lqip' => 0,
             'colors' => 0,
+            'hashes' => 0,
             'queue' => 0,
             'total' => 0,
             'bytes' => 0,
         ];
 
-        $baseDir = rtrim($config->paths->files, '/\\');
-
-        if ($page !== null && $page !== '') {
-            if (!$page instanceof Page) {
-                $page = is_numeric($page)
-                    ? $pages->get((int) $page)
-                    : $pages->get((string) $page);
-            }
-
-            if (!$page instanceof Page || !$page->id) {
-                throw new \InvalidArgumentException('InterventionImage: Target page not found for clearVariations().');
-            }
-
-            $baseDir = rtrim($page->filesManager()->path(), '/\\');
-        }
+        $baseDir = $this->resolveTargetDirectory($page);
 
         if (!is_dir($baseDir)) {
             return $counts;
@@ -1129,11 +1324,13 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $hasSpecificFilter = array_key_exists('variations', $options)
             || array_key_exists('lqip', $options)
             || array_key_exists('colors', $options)
+            || array_key_exists('hashes', $options)
             || array_key_exists('queue', $options);
 
         $clearVariations = $hasSpecificFilter ? !empty($options['variations']) : true;
         $clearLqip = $hasSpecificFilter ? !empty($options['lqip']) : true;
         $clearColors = $hasSpecificFilter ? !empty($options['colors']) : true;
+        $clearHashes = $hasSpecificFilter ? !empty($options['hashes']) : true;
         $clearQueue = $hasSpecificFilter ? !empty($options['queue']) : true;
         $dryRun = !empty($options['dryRun']);
 
@@ -1158,6 +1355,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             } elseif (str_ends_with($filename, '.colors.json')) {
                 if ($clearColors) {
                     $category = 'colors';
+                }
+            } elseif (str_ends_with($filename, '.hashes.json')) {
+                if ($clearHashes) {
+                    $category = 'hashes';
                 }
             } elseif (str_ends_with($filename, '.queue')) {
                 if ($clearQueue) {
@@ -1207,8 +1408,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         $options['cropping'] = 'contain';
-        $params = $this->resolveParameters($image, $width, $height, $options);
-        $event->return = $image->size($params['width'], $params['height'], $params['options']);
+        $event->return = $image->size($width, $height, $options);
     }
 
     /**
@@ -1225,8 +1425,11 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $opacity = (int) ($event->arguments(2) ?? 50);
         $offsetX = (int) ($event->arguments(3) ?? 15);
         $offsetY = (int) ($event->arguments(4) ?? 15);
-        $width = $event->arguments(5) ?: $image->width;
-        $height = $event->arguments(6) ?: $image->height;
+        $argWidth = $event->arguments(5);
+        $argHeight = $event->arguments(6);
+        $bothOmitted = empty($argWidth) && empty($argHeight);
+        $width = $bothOmitted ? (int) $image->width : ($argWidth ?: 0);
+        $height = $bothOmitted ? (int) $image->height : ($argHeight ?: 0);
         $options = is_array($event->arguments(7)) ? $event->arguments(7) : [];
 
         $options['insert'] = [
@@ -1252,6 +1455,88 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     }
 
     /**
+     * Resolves the original Pageimage and verifies that it is a non-empty raster file on disk.
+     *
+     * @param Pageimage $image
+     * @return Pageimage|null
+     */
+    protected function resolveRasterSource(Pageimage $image): ?Pageimage
+    {
+        $source = $image->getOriginal() ?: $image;
+        if ($this->isSvg($source) || !file_exists($source->filename) || filesize($source->filename) === 0) {
+            return null;
+        }
+        return $source;
+    }
+
+    /**
+     * Builds the absolute path for a sidecar cache file next to the original Pageimage.
+     *
+     * @param Pageimage $source
+     * @param string $suffix Sidecar suffix including leading dot (e.g. `.colors.json`, `.hashes.json`, `.lqip.webp`)
+     * @return string
+     */
+    protected function getSidecarPath(Pageimage $source, string $suffix): string
+    {
+        return $source->pagefiles->path() . pathinfo($source->basename, PATHINFO_FILENAME) . $suffix;
+    }
+
+    /**
+     * Reads and decodes a JSON sidecar cache file if it exists on disk.
+     *
+     * @param string $path
+     * @return array<string, mixed>|null
+     */
+    protected function readSidecarJson(string $path): ?array
+    {
+        if (!file_exists($path)) {
+            return null;
+        }
+        $decoded = wireDecodeJSON((string) file_get_contents($path), true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Atomically writes an associative array to a JSON sidecar cache file.
+     *
+     * @param string $path
+     * @param array<string, mixed> $data
+     */
+    protected function writeSidecarJson(string $path, array $data): void
+    {
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE);
+        if (is_string($json)) {
+            $this->wire()->files->filePutContents($path, $json, LOCK_EX);
+        }
+    }
+
+    /**
+     * Formats a 6-character hexadecimal color string with or without a leading `#`.
+     *
+     * @param string $hex
+     * @param bool $prefix
+     * @return string
+     */
+    protected function formatHexColor(string $hex, bool $prefix): string
+    {
+        $clean = ltrim($hex, '#');
+        return $prefix ? ('#' . $clean) : $clean;
+    }
+
+    /**
+     * Logs an exception message to the ProcessWire error log when debug mode is enabled.
+     *
+     * @param string $context
+     * @param \Throwable $e
+     */
+    protected function logDebugError(string $context, \Throwable $e): void
+    {
+        if ($this->wire()->config->debug) {
+            $this->wire()->log->error("InterventionImage {$context} Error: " . $e->getMessage());
+        }
+    }
+
+    /**
      * Hook: Pageimage::dominantColor(bool $prefix = true)
      * Extracts the single most visually dominant hex color of the image using Intervention v4.4 ColorExtractor.
      */
@@ -1268,7 +1553,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             return;
         }
 
-        $event->return = $prefix ? ('#' . ltrim($hex, '#')) : ltrim($hex, '#');
+        $event->return = $this->formatHexColor($hex, $prefix);
     }
 
     /**
@@ -1288,7 +1573,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $palette = array_slice($meta['palette'] ?? [], 0, $limit);
 
         $event->return = array_map(
-            static fn(string $hex): string => $prefix ? ('#' . ltrim($hex, '#')) : ltrim($hex, '#'),
+            fn(string $hex): string => $this->formatHexColor($hex, $prefix),
             $palette
         );
     }
@@ -1309,7 +1594,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $formatted = [];
         foreach ($theme as $swatch => $hex) {
             $formatted[$swatch] = is_string($hex) && $hex !== ''
-                ? ($prefix ? ('#' . ltrim($hex, '#')) : ltrim($hex, '#'))
+                ? $this->formatHexColor($hex, $prefix)
                 : null;
         }
 
@@ -1326,21 +1611,20 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     protected function extractColorMetadata(Pageimage $image, int $paletteLimit = 8): array
     {
-        $source = $image->getOriginal() ?: $image;
-        if ($this->isSvg($source) || !file_exists($source->filename) || filesize($source->filename) === 0) {
+        $source = $this->resolveRasterSource($image);
+        if (!$source instanceof Pageimage) {
             return ['dominant' => '', 'palette' => [], 'theme' => []];
         }
 
-        $cachePath = $source->pagefiles->path . pathinfo($source->basename, PATHINFO_FILENAME) . '.colors.json';
-        if (file_exists($cachePath)) {
-            $cached = wireDecodeJSON((string) file_get_contents($cachePath), true);
-            if (is_array($cached) && isset($cached['dominant'], $cached['palette'], $cached['theme']) && count($cached['palette']) >= $paletteLimit) {
-                return $cached;
-            }
+        $cachePath = $this->getSidecarPath($source, '.colors.json');
+        $cached = $this->readSidecarJson($cachePath);
+        if (is_array($cached) && isset($cached['dominant'], $cached['palette'], $cached['theme']) && count($cached['palette']) >= $paletteLimit) {
+            /** @var array{dominant: string, palette: list<string>, theme: array<string, ?string>} $cached */
+            return $cached;
         }
 
         try {
-            $sample = $this->intervention->decodePath($source->filename)->scaleDown(width: 96, height: 96);
+            $sample = $this->intervention->decodePath($source->filename)->scaleDown(width: 32, height: 32);
             $extractor = $sample->colors();
 
             $dominantPalette = $extractor->dominant(max(8, $paletteLimit));
@@ -1366,18 +1650,209 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                 'theme' => $themeMap,
             ];
 
-            $json = json_encode($data, JSON_UNESCAPED_UNICODE);
-            if (is_string($json)) {
-                $this->wire()->files->filePutContents($cachePath, $json, LOCK_EX);
-            }
+            $this->writeSidecarJson($cachePath, $data);
 
             return $data;
         } catch (\Throwable $e) {
-            if ($this->wire()->config->debug) {
-                $this->wire()->log->error('InterventionImage ColorExtractor Error: ' . $e->getMessage());
-            }
+            $this->logDebugError('ColorExtractor', $e);
             return ['dominant' => '', 'palette' => [], 'theme' => []];
         }
+    }
+
+    /**
+     * Hook: Pageimage::imageHash(string|StrategyInterface|AnalyzerInterface $strategy = 'dhash')
+     * Computes and caches the perceptual hexadecimal fingerprint of a Pageimage.
+     */
+    public function hookImageHash(HookEvent $event): void
+    {
+        /** @var Pageimage $image */
+        $image = $event->object;
+        $strategy = $event->arguments(0) ?? 'dhash';
+
+        $event->return = $this->extractImageHash($image, $strategy);
+    }
+
+    /**
+     * Hook: Pageimage::hashDistance(Pageimage|string|Hash $other, string|StrategyInterface|AnalyzerInterface $strategy = 'dhash')
+     * Calculates the Hamming distance between this Pageimage and another Pageimage, file path, or hexadecimal hash string.
+     */
+    public function hookHashDistance(HookEvent $event): void
+    {
+        /** @var Pageimage $image */
+        $image = $event->object;
+        $other = $event->arguments(0);
+        $strategy = $event->arguments(1) ?? 'dhash';
+
+        $event->return = $this->calculateHashDistance($image, $other, $strategy);
+    }
+
+    /**
+     * Hook: Pageimage::isSimilar(Pageimage|string|Hash $other, int $maxDistance = 5, string|StrategyInterface|AnalyzerInterface $strategy = 'dhash')
+     * Determines whether this Pageimage is visually similar to another Pageimage, file path, or hexadecimal hash string.
+     */
+    public function hookIsSimilar(HookEvent $event): void
+    {
+        /** @var Pageimage $image */
+        $image = $event->object;
+        $other = $event->arguments(0);
+        $maxDistance = (int) ($event->arguments(1) ?? 5);
+        $strategy = $event->arguments(2) ?? 'dhash';
+
+        $distance = $this->calculateHashDistance($image, $other, $strategy);
+        $event->return = $distance >= 0 && $distance <= max(0, $maxDistance);
+    }
+
+    /**
+     * Resolves a perceptual hash strategy identifier or instance into a cache key and AnalyzerInterface.
+     *
+     * @param string|StrategyInterface|AnalyzerInterface $strategy
+     * @return array{key: string, analyzer: AnalyzerInterface}
+     */
+    protected function resolveHashStrategy(string|StrategyInterface|AnalyzerInterface $strategy = 'dhash'): array
+    {
+        if ($strategy instanceof StrategyInterface && $strategy instanceof AnalyzerInterface) {
+            $key = match (true) {
+                $strategy instanceof DifferenceStrategy => 'dhash',
+                $strategy instanceof PerceptualStrategy => 'phash',
+                $strategy instanceof AverageStrategy => 'ahash',
+                $strategy instanceof BlockStrategy => 'bhash',
+                default => 'custom_' . substr(md5($strategy::class), 0, 8),
+            };
+            return ['key' => $key, 'analyzer' => $strategy];
+        }
+
+        if ($strategy instanceof StrategyInterface) {
+            return [
+                'key' => 'custom_' . substr(md5($strategy::class), 0, 8),
+                'analyzer' => new ImageHashAnalyzer($strategy),
+            ];
+        }
+
+        if ($strategy instanceof AnalyzerInterface) {
+            return [
+                'key' => 'custom_' . substr(md5($strategy::class), 0, 8),
+                'analyzer' => $strategy,
+            ];
+        }
+
+        $normalized = strtolower(trim($strategy));
+        return match ($normalized) {
+            '', 'dhash', 'difference' => ['key' => 'dhash', 'analyzer' => new DifferenceStrategy()],
+            'phash', 'perceptual' => ['key' => 'phash', 'analyzer' => new PerceptualStrategy()],
+            'ahash', 'average' => ['key' => 'ahash', 'analyzer' => new AverageStrategy()],
+            'bhash', 'block' => ['key' => 'bhash', 'analyzer' => new BlockStrategy()],
+            default => throw new \InvalidArgumentException("InterventionImage: Unsupported perceptual hash strategy '{$strategy}'."),
+        };
+    }
+
+    /**
+     * Extracts and caches the perceptual hash for a Pageimage in `{basename}.hashes.json`.
+     *
+     * @param Pageimage $image
+     * @param string|StrategyInterface|AnalyzerInterface $strategy
+     * @return string
+     */
+    protected function extractImageHash(Pageimage $image, string|StrategyInterface|AnalyzerInterface $strategy = 'dhash'): string
+    {
+        $source = $this->resolveRasterSource($image);
+        if (!$source instanceof Pageimage) {
+            return '';
+        }
+
+        $resolved = $this->resolveHashStrategy($strategy);
+        $cacheKey = $resolved['key'];
+        $cachePath = $this->getSidecarPath($source, '.hashes.json');
+
+        $cachedHashes = $this->readSidecarJson($cachePath) ?? [];
+        $existing = $cachedHashes[$cacheKey] ?? null;
+        if (is_string($existing) && $existing !== '' && ctype_xdigit($existing)) {
+            return $existing;
+        }
+
+        try {
+            $hashResult = $this->intervention
+                ->decodePath($source->filename)
+                ->analyze($resolved['analyzer']);
+
+            $hex = $hashResult instanceof Hash ? $hashResult->toHex() : (string) $hashResult;
+            if ($hex === '' || !ctype_xdigit($hex)) {
+                return '';
+            }
+
+            $cachedHashes[$cacheKey] = $hex;
+            $this->writeSidecarJson($cachePath, $cachedHashes);
+
+            return $hex;
+        } catch (\Throwable $e) {
+            $this->logDebugError('ImageHash', $e);
+            return '';
+        }
+    }
+
+    /**
+     * Resolves a target Pageimage, file path, hexadecimal hash string, or Hash object into a Hash instance.
+     *
+     * @param mixed $target
+     * @param string|StrategyInterface|AnalyzerInterface $strategy
+     * @return Hash|null
+     */
+    protected function resolveTargetHash(mixed $target, string|StrategyInterface|AnalyzerInterface $strategy = 'dhash'): ?Hash
+    {
+        if ($target instanceof Hash) {
+            return $target;
+        }
+
+        if ($target instanceof Pageimage) {
+            $hex = $this->extractImageHash($target, $strategy);
+            return $hex !== '' ? Hash::fromHex($hex) : null;
+        }
+
+        if (!is_string($target) || trim($target) === '') {
+            return null;
+        }
+
+        $trimmed = ltrim(trim($target), '#');
+
+        if (!is_file($target) && strlen($trimmed) >= 2 && strlen($trimmed) % 2 === 0 && ctype_xdigit($trimmed)) {
+            return Hash::fromHex($trimmed);
+        }
+
+        if (is_file($target) && filesize($target) > 0) {
+            $resolved = $this->resolveHashStrategy($strategy);
+            try {
+                $result = $this->intervention->decodePath($target)->analyze($resolved['analyzer']);
+                return $result instanceof Hash ? $result : Hash::fromHex((string) $result);
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Calculates the Hamming distance between a Pageimage and another target.
+     *
+     * @param Pageimage $image
+     * @param mixed $other
+     * @param string|StrategyInterface|AnalyzerInterface $strategy
+     * @return int
+     */
+    protected function calculateHashDistance(Pageimage $image, mixed $other, string|StrategyInterface|AnalyzerInterface $strategy = 'dhash'): int
+    {
+        $sourceHex = $this->extractImageHash($image, $strategy);
+        if ($sourceHex === '') {
+            throw new \InvalidArgumentException('InterventionImage: Unable to compute perceptual hash for source image.');
+        }
+
+        $sourceHash = Hash::fromHex($sourceHex);
+        $targetHash = $this->resolveTargetHash($other, $strategy);
+
+        if (!$targetHash instanceof Hash) {
+            throw new \InvalidArgumentException('InterventionImage: Invalid comparison target for perceptual hash distance.');
+        }
+
+        return $sourceHash->distance($targetHash);
     }
 
     /**
@@ -1389,18 +1864,15 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     protected function generateLqip(Pageimage $image): string
     {
-        $source = $image->getOriginal() ?: $image;
-        if ($this->isSvg($source)) {
+        $source = $this->resolveRasterSource($image);
+        if (!$source instanceof Pageimage) {
             return '';
         }
 
-        $lqipPath = $source->pagefiles->path . pathinfo($source->basename, PATHINFO_FILENAME) . '.lqip.webp';
+        $lqipPath = $this->getSidecarPath($source, '.lqip.webp');
 
         if (!file_exists($lqipPath)) {
             try {
-                if (!file_exists($source->filename) || filesize($source->filename) === 0) {
-                    return '';
-                }
                 $encoded = $this->intervention->decodePath($source->filename)
                     ->scaleDown(width: 24)
                     ->blur(2)
@@ -1409,18 +1881,14 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                 $encoded->save($lqipPath);
                 return (string) $encoded->toDataUri();
             } catch (\Throwable $e) {
-                if ($this->wire()->config->debug) {
-                    $this->wire()->log->error('InterventionImage LQIP Error: ' . $e->getMessage());
-                }
+                $this->logDebugError('LQIP', $e);
                 return '';
             }
         }
 
-        if (file_exists($lqipPath)) {
-            $data = file_get_contents($lqipPath);
-            if ($data !== false) {
-                return 'data:image/webp;base64,' . base64_encode($data);
-            }
+        $data = file_get_contents($lqipPath);
+        if ($data !== false) {
+            return 'data:image/webp;base64,' . base64_encode($data);
         }
 
         return '';
@@ -1559,17 +2027,15 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $this->applyFocusCrop($image, $width, $height, $options['focus'], $upscale);
         }
         // F. Standard Alignment Cover or Proportional Scale
-        else {
-            if ($width && $height && $cropping !== false) {
-                $align = $this->mapCropPosition($cropping);
-                $upscale
-                    ? $image->cover($width, $height, $align)
-                    : $image->coverDown($width, $height, $align);
-            } else {
-                $upscale
-                    ? $image->scale($width ?: null, $height ?: null)
-                    : $image->scaleDown($width ?: null, $height ?: null);
-            }
+        elseif ($cropping !== false) {
+            $align = $this->mapCropPosition($cropping);
+            $upscale
+                ? $image->cover($width, $height, $align)
+                : $image->coverDown($width, $height, $align);
+        } else {
+            $upscale
+                ? $image->scale($width, $height)
+                : $image->scaleDown($width, $height);
         }
 
         // Fill transparent areas if background color is explicitly specified
@@ -1578,9 +2044,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         // 3. Effects — all values clamped per Intervention v4.4 contracts
-        if (($options['sharpening'] ?? 'soft') !== 'none') {
-            $amount = ['medium' => 20, 'strong' => 40, 'soft' => 10][(string) $options['sharpening']] ?? 10;
-            $image->sharpen(max(0, min(100, (int) $amount)));
+        $sharpenAmount = $this->resolveSharpenAmount($options);
+        if ($sharpenAmount > 0) {
+            $image->sharpen($sharpenAmount);
         }
 
         if (isset($options['brightness']) && is_numeric($options['brightness'])) {
@@ -1608,9 +2074,6 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!empty($options['blur'])) {
             $image->blur(max(0, min(100, (int) $options['blur'])));
         }
-        if (!empty($options['sharpen'])) {
-            $image->sharpen(max(0, min(100, (int) $options['sharpen'])));
-        }
         if (!empty($options['invert'])) {
             $image->invert();
         }
@@ -1618,7 +2081,18 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $image->pixelate(max(1, (int) $options['pixelate']));
         }
         if (!empty($options['reduceColors'])) {
-            $image->reduceColors(max(1, min(256, (int) $options['reduceColors'])), $background);
+            $maxColors = max(1, min(256, (int) $options['reduceColors']));
+            try {
+                $image->reduceColors($maxColors, $background);
+            } catch (\Intervention\Image\Exceptions\NotSupportedException) {
+                $native = $image->core()->native();
+                if ($native instanceof \Jcupitt\Vips\Image) {
+                    $levels = max(2, min(16, (int) round($maxColors ** (1 / 3))));
+                    $step = 255.0 / ($levels - 1);
+                    $quantized = $native->linear(1.0 / $step, 0.0)->rint()->linear($step, 0.0)->cast($native->format);
+                    $image->core()->setNative($quantized);
+                }
+            }
         }
 
         // 4. Watermark / Insert — Intervention v4.4 insert(mixed $image, int $x = 0, int $y = 0, string|Alignment $alignment = Alignment::TOP_LEFT, float $transparency = 1)
@@ -1687,20 +2161,46 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $encoded->save($destination);
 
         if ($source instanceof Pageimage) {
-            $variation = clone $source;
-            $variation->setOriginal($source);
-            $variation->setFilename($destination);
-            return $variation;
+            return $this->createVariationInstance($source, $destination);
         }
 
         return $encoded;
     }
 
     /**
+     * Resolves the effective sharpening amount (0-100) from `sharpen` (explicit numeric) or `sharpening` (preset).
+     * Explicit numeric `sharpen` takes precedence over the `sharpening` preset.
+     *
+     * @param array<string, mixed> $options
+     * @return int
+     */
+    protected function resolveSharpenAmount(array $options): int
+    {
+        if (isset($options['sharpen']) && is_numeric($options['sharpen'])) {
+            return max(0, min(100, (int) $options['sharpen']));
+        }
+
+        $preset = strtolower(trim((string) ($options['sharpening'] ?? 'soft')));
+        if ($preset === 'none' || $preset === '' || $preset === 'false' || $preset === '0') {
+            return 0;
+        }
+
+        if (is_numeric($preset)) {
+            return max(0, min(100, (int) $preset));
+        }
+
+        return match ($preset) {
+            'medium' => 20,
+            'strong' => 40,
+            default => 10,
+        };
+    }
+
+    /**
      * Helper: Determines file path and format based on configuration
      * 
      * @param Pageimage $image
-     * @param array<width: int, height: int, options: array> $params
+     * @param array{width: int, height: int, options: array<string, mixed>} $params
      * 
      * @return string
      */
@@ -1730,35 +2230,26 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * 
      * @param Pageimage $source
      * @param string $destPath
-     * @param array<width: int, height: int, options: array> $params
+     * @param array{width: int, height: int, options: array<string, mixed>} $params
      * 
      * @return void
      */
     protected function createQueue(Pageimage $source, string $destPath, array $params): void
     {
-        /**
-         * @var WireFileTools $files
-         */
-        $files = $this->wire()->files;
         $src = str_replace($this->wire()->config->paths->site, '', $source->filename);
-        $data = [
+        $this->writeSidecarJson($destPath . '.queue', [
             'source' => $src,
             'width' => $params['width'],
             'height' => $params['height'],
-            'options' => $params['options']
-        ];
-        $json = json_encode($data, JSON_UNESCAPED_UNICODE);
-        if ($json === false) {
-            throw new \RuntimeException('InterventionImage: Queue JSON encode failed for ' . basename($destPath));
-        }
-        $files->filePutContents($destPath . '.queue', $json, LOCK_EX);
+            'options' => $params['options'],
+        ]);
     }
 
     /**
      * Creates filename suffix conforming to ProcessWire standards
      * Standard: .widthxheight[-suffix].ext
      * 
-     * @param array<width: int, height: int, options: array> $params
+     * @param array{width: int, height: int, options: array<string, mixed>} $params
      * 
      * @return string
      */
@@ -1776,8 +2267,9 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (!empty($options['suffix'])) {
             $list = is_array($options['suffix']) ? $options['suffix'] : explode(' ', $options['suffix']);
             foreach ($list as $s) {
-                if ($c = $sanitizer->fieldName($s)) {
-                    $parts[] = $c;
+                $cleaned = $sanitizer->fieldName($s);
+                if ($cleaned !== '') {
+                    $parts[] = $cleaned;
                 }
             }
         }
@@ -1800,19 +2292,24 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         // Crop / Contain / Focus Info
+        $cropping = $options['cropping'] ?? true;
         if (isset($options['crop_x'], $options['crop_y'])) {
             $parts[] = "c{$options['crop_x']}x{$options['crop_y']}";
-        } elseif (!empty($options['contain']) || ($options['cropping'] ?? null) === 'contain') {
+        } elseif (!empty($options['contain']) || $cropping === 'contain') {
             $parts[] = 'fit';
-        } elseif (!empty($options['focus']) && is_array($options['focus'])) {
+        } elseif (is_array($cropping) && count($cropping) === 2) {
+            $cx = $sanitizer->fieldName((string) $cropping[0]);
+            $cy = $sanitizer->fieldName((string) $cropping[1]);
+            $parts[] = "c{$cx}x{$cy}";
+        } elseif (($cropping === true || $cropping === 'center') && !empty($options['focus']) && is_array($options['focus'])) {
             $ft = (int) round((float) ($options['focus']['top'] ?? $options['focus'][0] ?? 50));
             $fl = (int) round((float) ($options['focus']['left'] ?? $options['focus'][1] ?? 50));
             $fz = (int) ($options['focus']['zoom'] ?? $options['focus'][2] ?? 0);
             if ($ft !== 50 || $fl !== 50 || $fz > 0) {
                 $parts[] = "f{$ft}x{$fl}" . ($fz > 0 ? "z{$fz}" : '');
             }
-        } elseif (!empty($options['cropping']) && is_string($options['cropping']) && !in_array($options['cropping'], ['center', 'true'], true)) {
-            $parts[] = $sanitizer->fieldName($options['cropping']);
+        } elseif (!empty($cropping) && is_string($cropping) && !in_array($cropping, ['center', 'true'], true)) {
+            $parts[] = $sanitizer->fieldName($cropping);
         }
 
         if (!empty($options['background']) && is_string($options['background'])) {
@@ -1870,9 +2367,12 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $parts[] = 'blu' . (int) $options['blur'];
         }
 
-        // Sharpen (e.g. -sha10)
-        if (!empty($options['sharpen'])) {
-            $parts[] = 'sha' . (int) $options['sharpen'];
+        // Sharpen (e.g. -sha20 or -sha0 when sharpening is explicitly overridden from default 'soft')
+        $sharpenAmount = $this->resolveSharpenAmount($options);
+        $hasExplicitSharpen = isset($options['sharpen']) && is_numeric($options['sharpen']) && (int) $options['sharpen'] > 0;
+        $hasCustomPreset = isset($options['sharpening']) && strtolower(trim((string) $options['sharpening'])) !== 'soft';
+        if ($hasExplicitSharpen || $hasCustomPreset) {
+            $parts[] = 'sha' . $sharpenAmount;
         }
 
         // Invert (e.g. -inv)
@@ -1956,7 +2456,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      * Helper: Converts an associative array to an HTML attribute string.
      * Skips null, false values.
      * 
-     * @param array $attributes
+     * @param array<string, mixed> $attributes
      * 
      * @return string
      */
@@ -1964,7 +2464,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         $attrs = [];
         foreach ($attributes as $key => $value) {
-            if ($value === null || $value === false || (is_string($value) && !strlen($value))) {
+            if ($value === null || $value === false || $value === '') {
                 continue;
             }
 
@@ -1974,7 +2474,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
 
             if (is_array($value)) {
-                $value = implode(' ', array_map(fn($v) => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8'), $value));
+                $value = implode(' ', array_map(static fn(mixed $v): string => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8'), $value));
             } else {
                 $value = htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
             }
@@ -1994,18 +2494,44 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         /** @var InputfieldFieldset $fs */
         $fs = $modules->get('InputfieldFieldset');
         $fs->name = 'intervention';
-        $fs->label = __('Settings');
+        $fs->label = $this->_('Settings');
         $inputfields->add($fs);
 
         /** @var InputfieldRadios $f */
         $f = $modules->get('InputfieldRadios');
         $f->name = 'driver';
-        $f->label = __('Image Processing Driver');
+        $f->label = $this->_('Image Processing Driver');
+
+        $vipsAvailable = $this->isDriverHealthy(VipsDriver::class);
+        $imagickAvailable = $this->isDriverHealthy(ImagickDriver::class);
+        $gdAvailable = $this->isDriverHealthy(GdDriver::class);
+        $activeDriverId = isset($this->intervention) ? $this->intervention->driver->id() : '';
+
+        $availableLabel = $this->_('available');
+        $unavailableLabel = $this->_('not available');
+        $ffiEnable = strtolower(trim((string) ini_get('ffi.enable')));
+        $isFfiPreloadRestricted = !$vipsAvailable && extension_loaded('ffi') && $ffiEnable === 'preload' && PHP_SAPI !== 'cli';
+
+        $vipsStatusLabel = match (true) {
+            $vipsAvailable => $availableLabel,
+            $isFfiPreloadRestricted => $this->_('CLI only — see note below'),
+            default => $unavailableLabel,
+        };
+
         $f->addOptions([
-            'auto' => __('Auto Detect'),
-            'imagick' => __('Force Imagick'),
-            'gd' => __('Force GD')
+            'auto' => $this->_('Auto Detect (Vips -> Imagick -> GD)') . ($activeDriverId !== '' ? sprintf(' (%s: %s)', $this->_('active'), $activeDriverId) : ''),
+            'vips' => sprintf('%s (%s)', $this->_('Force Vips (libvips)'), $vipsStatusLabel),
+            'imagick' => sprintf('%s (%s)', $this->_('Force Imagick'), $imagickAvailable ? $availableLabel : $unavailableLabel),
+            'gd' => sprintf('%s (%s)', $this->_('Force GD'), $gdAvailable ? $availableLabel : $unavailableLabel),
         ]);
+        if ($isFfiPreloadRestricted) {
+            $iniPath = php_ini_loaded_file() ?: 'php.ini';
+            $f->notes = sprintf(
+                $this->_('libvips uses PHP FFI (`jcupitt/vips`). Because `ffi.enable=preload` is active in `%s`, PHP restricts FFI in Web/FPM requests while allowing it in CLI (`wire image:queue`). Set `ffi.enable=true` in `%s` and restart PHP-FPM to enable Vips in Web requests.'),
+                $iniPath,
+                $iniPath
+            );
+        }
         $f->value = $this->driver ?: 'auto';
         $f->columnWidth = 50;
         $fs->add($f);
@@ -2013,18 +2539,18 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         /** @var InputfieldCheckboxes $f */
         $f = $modules->get('InputfieldCheckboxes');
         $f->name = 'options';
-        $f->label = __('Options');
-        $f->description = __('Select additional options for image processing.');
+        $f->label = $this->_('Options');
+        $f->description = $this->_('Select additional options for image processing.');
         $f->addOptions([
-            'delayed' => __('Delays image processing until it is requested'),
-            'lqip' => __('Enable Low-Quality Image Placeholder (LQIP)'),
-            'lazyload' => __('Enable Fade-in Lazy Loading effect'),
-            'inlineLazyload' => __('Add Lazy Loading fade in inline style and script'),
-            'upscale' => __('Upscale images to fit requested dimensions'),
-            'strip' => __('Strip EXIF/Metadata from generated variations'),
-            'progressive' => __('Enable progressive JPEG / interlaced PNG encoding'),
-            'avifAdd' => __('Add AVIF format to picture tags'),
-            'webpAdd' => __('Add WebP format to picture tags')
+            'delayed' => $this->_('Delays image processing until it is requested'),
+            'lqip' => $this->_('Enable Low-Quality Image Placeholder (LQIP)'),
+            'lazyload' => $this->_('Enable Fade-in Lazy Loading effect'),
+            'inlineLazyload' => $this->_('Add Lazy Loading fade in inline style and script'),
+            'upscale' => $this->_('Upscale images to fit requested dimensions'),
+            'strip' => $this->_('Strip EXIF/Metadata from generated variations'),
+            'progressive' => $this->_('Enable progressive JPEG / interlaced PNG encoding'),
+            'avifAdd' => $this->_('Add AVIF format to picture tags'),
+            'webpAdd' => $this->_('Add WebP format to picture tags')
         ]);
         $f->value = is_array($this->options) ? $this->options : [];
         $f->columnWidth = 50;
@@ -2033,8 +2559,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         /** @var InputfieldInteger $f */
         $f = $modules->get('InputfieldInteger');
         $f->name = 'quality';
-        $f->label = __('Default Quality');
-        $f->description = __('Default quality for generated images (0-100)');
+        $f->label = $this->_('Default Quality');
+        $f->description = $this->_('Default quality for generated images (0-100)');
         $f->set('inputType', 'number');
         $f->set('size', 0);
         $f->set('min', 0);
@@ -2047,12 +2573,12 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         /** @var InputfieldSelect $f */
         $f = $modules->get('InputfieldSelect');
         $f->name = 'outputFormat';
-        $f->label = __('Default Output Format');
-        $f->description = __('Default output format for generated images.');
+        $f->label = $this->_('Default Output Format');
+        $f->description = $this->_('Default output format for generated images.');
         $f->addOptions([
-            'original' => __('Original'),
-            'webpOnly' => __('WebP Only'),
-            'avifOnly' => __('AVIF Only')
+            'original' => $this->_('Original'),
+            'webpOnly' => $this->_('WebP Only'),
+            'avifOnly' => $this->_('AVIF Only')
         ]);
         $f->value = $this->outputFormat ?: $this->defaults['outputFormat'];
         $f->required = true;
@@ -2062,19 +2588,19 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         /** @var InputfieldTextarea $f */
         $f = $modules->get('InputfieldTextarea');
         $f->name = 'breakpoints';
-        $f->label = __('Breakpoints');
-        $f->description = __('Add breakpoints for responsive images. One per line.');
+        $f->label = $this->_('Breakpoints');
+        $f->description = $this->_('Add breakpoints for responsive images. One per line.');
         $f->value = $this->breakpoints ?: $this->defaults['breakpoints'];
-        $f->notes = __('Breakpoints should be in the format `value=key|Label`. For set default breakpoint `value=+key|Label` format.');
+        $f->notes = $this->_('Breakpoints should be in the format `value=key|Label`. For set default breakpoint `value=+key|Label` format.');
         $f->columnWidth = 50;
         $fs->add($f);
 
         /** @var InputfieldTextarea $f */
         $f = $modules->get('InputfieldTextarea');
         $f->name = 'aspectRatios';
-        $f->label = __('Aspect Ratios');
-        $f->description = __('Add aspect ratios for responsive images. One per line.');
-        $f->notes = __('Aspect ratios should be in the format `width:height=key|Label`. For set default aspect ratio `width:height=+key|Label` format.');
+        $f->label = $this->_('Aspect Ratios');
+        $f->description = $this->_('Add aspect ratios for responsive images. One per line.');
+        $f->notes = $this->_('Aspect ratios should be in the format `width:height=key|Label`. For set default aspect ratio `width:height=+key|Label` format.');
         $f->value = $this->aspectRatios ?: $this->defaults['aspectRatios'];
         $f->columnWidth = 50;
         $fs->add($f);
@@ -2082,8 +2608,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         /** @var InputfieldText $f */
         $f = $modules->get('InputfieldText');
         $f->name = 'columnWidths';
-        $f->label = __('Grid Columns');
-        $f->description = __('Comma-separated list of grid columns for responsive images.');
+        $f->label = $this->_('Grid Columns');
+        $f->description = $this->_('Comma-separated list of grid columns for responsive images.');
         $f->value = $this->columnWidths ?: $this->defaults['columnWidths'];
         $f->columnWidth = 50;
         $fs->add($f);
@@ -2091,8 +2617,8 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         /** @var InputfieldText $f */
         $f = $modules->get('InputfieldText');
         $f->name = 'factors';
-        $f->label = __('Responsive image resizing factors');
-        $f->description = __('Comma-separated list of responsive image resizing factors.');
+        $f->label = $this->_('Responsive image resizing factors');
+        $f->description = $this->_('Comma-separated list of responsive image resizing factors.');
         $f->value = $this->factors ?: $this->defaults['factors'];
         $f->columnWidth = 50;
         $fs->add($f);

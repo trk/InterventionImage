@@ -7,17 +7,43 @@ namespace Composer\Autoload;
 class ComposerStaticInit2aac4db7a507a7841f7f8c2b193a2b06
 {
     public static $prefixLengthsPsr4 = array (
+        'P' =>
+        array (
+            'Psr\\Log\\' => 8,
+        ),
+        'J' =>
+        array (
+            'Jcupitt\\Vips\\' => 13,
+        ),
         'I' =>
         array (
+            'Intervention\\Image\\Drivers\\Vips\\' => 32,
             'Intervention\\Image\\' => 19,
+            'Intervention\\ImageHash\\' => 23,
             'Intervention\\Gif\\' => 17,
         ),
     );
 
     public static $prefixDirsPsr4 = array (
+        'Psr\\Log\\' =>
+        array (
+            0 => __DIR__ . '/..' . '/psr/log/src',
+        ),
+        'Jcupitt\\Vips\\' =>
+        array (
+            0 => __DIR__ . '/..' . '/jcupitt/vips/src',
+        ),
+        'Intervention\\Image\\Drivers\\Vips\\' =>
+        array (
+            0 => __DIR__ . '/..' . '/intervention/image-driver-vips/src',
+        ),
         'Intervention\\Image\\' =>
         array (
             0 => __DIR__ . '/..' . '/intervention/image/src',
+        ),
+        'Intervention\\ImageHash\\' =>
+        array (
+            0 => __DIR__ . '/..' . '/intervention/imagehash/src',
         ),
         'Intervention\\Gif\\' =>
         array (

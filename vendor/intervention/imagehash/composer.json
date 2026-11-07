@@ -1,0 +1,48 @@
+{
+    "name": "intervention/imagehash",
+    "description": "Perceptual image hashing for PHP",
+    "keywords": ["imagehash", "perceptual", "hash", "dhash", "ahash", "phash", "image hash"],
+    "homepage": "https://github.com/Intervention/imagehash",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Jens Segers",
+            "homepage": "https://jenssegers.com"
+        },
+        {
+            "name": "Kenneth Rapp"
+        },
+        {
+            "name": "Oliver Vogel",
+            "email": "oliver@intervention.io",
+            "homepage": "https://intervention.io"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "intervention/image": "^4.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^12.0",
+        "phpstan/phpstan": "^2.1",
+        "intervention/coding-standard": "^1"
+    },
+    "suggest": {
+        "ext-gmp": "GMP results in faster comparisons"
+    },
+    "autoload": {
+        "psr-4": {
+            "Intervention\\ImageHash\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Intervention\\ImageHash\\Tests\\": "tests"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        }
+    }
+}

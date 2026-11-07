@@ -1,218 +1,168 @@
 # Intervention Image Engine for ProcessWire
 
-A high-performance responsive image engine for ProcessWire powered by [Intervention Image v4](https://image.intervention.io/v4). This module replaces the default ProcessWire image sizing engine with a modern, feature-rich alternative that supports **delayed rendering**, **next-gen formats (WebP/AVIF)**, and **fluid responsive sizing**.
-
-## Features
-
-- **Delayed Rendering**: Images are generated on-demand when requested by the browser, significantly speeding up initial page loads.
-- **Modern Formats**: Native support for WebP and AVIF output with EXIF/metadata stripping (`strip`) and progressive/interlaced encoding.
-- **Driver Agnostic**: Automatically selects the best available driver (Imagick or GD).
-- **Responsive System**: Define centralized breakpoints, aspect ratios, and column widths.
-- **Pixel-Accurate Focal Point + Zoom Cropping**: Respects ProcessWire's exact `focus()` (`top%`, `left%`, `zoom%`) coordinates as well as `Intervention\Image\Alignment` positions.
-- **Color Extraction (v4.4 `ColorExtractor`)**: Native `Pageimage` hooks for `dominantColor()`, `palette()`, and `colorTheme()` (`Theme::VIBRANT_MUTED`).
-- **Srcset Generation**: Automatically generates `srcset` attributes based on configurable scaling factors.
+A high-performance responsive image variation, visual color analysis, and perceptual fingerprinting engine for ProcessWire powered by [Intervention Image v4.4](https://image.intervention.io/v4). It replaces ProcessWire's default frontend image sizing engine with `libvips` (`Vips`), `Imagick`, and `GD` driver auto-detection, delayed on-demand `.queue` rendering, pixel-accurate focal-point + zoom cropping, next-generation `AVIF` / `WebP` `<picture>` output, Base64 `LQIP` placeholders, `ColorExtractor` palettes, and `Intervention\ImageHash` similarity matching.
 
 ## Requirements
 
-- ProcessWire 3.x
-- PHP 8.3+
-- FileInfo Extension
-- **Imagick** (Recommended for AVIF) or **GD** Library
+- **PHP:** `>= 8.3` (tested on PHP `8.5`)
+- **ProcessWire:** `>= 3.0.271`
+- **PHP Extensions:** `ext-fileinfo`, plus at least one image processing backend:
+  - **Vips (`libvips`):** `ext-ffi` (`ffi.enable=true` for Web/FPM or `ffi.enable=preload` for CLI) + system `libvips` (`intervention/image-driver-vips: ^4.2`)
+  - **Imagick:** `ext-imagick`
+  - **GD:** `ext-gd`
+
+## Installation
+
+Install the module dependencies via Composer and enable the module using `vendor/bin/wire`:
+
+```bash
+cd site/modules/InterventionImage && composer install
+php vendor/bin/wire module:install InterventionImage
+```
+
+## Quick Start
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace ProcessWire;
+
+/** @var Page $page */
+/** @var Pageimage|null $image */
+$image = $page->get('images')?->first();
+
+if ($image instanceof Pageimage) {
+	// 1. Render a responsive <picture> element using the 'landscape' preset
+	echo $image->render('landscape', [
+		'loading' => 'eager',
+		'isFirst' => true,
+		'class' => 'hero-image',
+	]);
+
+	// 2. Generate a specific WebP variation with focal-point crop and medium sharpening
+	$thumb = $image->size(800, 600, [
+		'format' => 'webp',
+		'quality' => 85,
+		'sharpening' => 'medium',
+	]);
+	echo $thumb->url;
+
+	// 3. Extract dominant hex color and perceptual dHash fingerprint
+	$dominantHex = $image->dominantColor();
+	$dhash = $image->imageHash('dhash');
+}
+```
 
 ## Configuration
 
-Go to **Modules > Configure > InterventionImage** to set up your preferences.
+Configure the module in **Modules > Configure > InterventionImage**:
 
-### Core Settings
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `driver` | `string` | `'auto'` | Image driver selection: `'auto'` (`Vips -> Imagick -> GD` via runtime `checkHealth()`), `'vips'`, `'imagick'`, or `'gd'`. |
+| `options` | `list<string>` | `['delayed', 'lqip', 'lazyload', 'inlineLazyload', 'upscale', 'strip', 'progressive', 'avifAdd', 'webpAdd']` | Feature flags for delayed `.queue` rendering, LQIP generation, fade-in lazyloading, metadata stripping, progressive encoding, and `<picture>` `<source>` tags. |
+| `quality` | `int` | `90` | Default compression quality (`0..100`) for generated variations. |
+| `outputFormat` | `string` | `'original'` | Default variation format: `'original'`, `'webpOnly'`, or `'avifOnly'`. |
+| `breakpoints` | `string` | `540=s\|Small` ... `1200=+l\|Large` | Multiline responsive breakpoints (`value=key\|Label`; prefix `+` marks the default breakpoint). |
+| `aspectRatios` | `string` | `1:1=square`, `16:9=+landscape`, `21:9=wide`, `4:5=portrait` | Multiline aspect ratio presets registered into `$config->imageSizes`. |
+| `columnWidths` | `string` | `'1-1, 1-2, 1-3, 1-4, 2-3, 3-4'` | Grid column fractions combined with aspect ratios (e.g. `landscape-1-2`). |
+| `factors` | `string` | `'0.5, 1, 1.5, 2'` | Scaling multipliers used by `$image->srcset()`. |
 
-- **Image Processing Driver**: Choose `Auto` to let the module decide, or force `Imagick`/`GD`.
-- **Default Output Format**:
-  - `Original`: Keeps the source format (JPG -> JPG).
-  - `WebP Only`: Converts all generated images to WebP.
-  - `AVIF Only`: Converts all generated images to AVIF.
-- **Quality**: Global compression quality (1-100).
+## Hooks & Events
 
-### Responsive Settings
-
-The module allows you to define a responsive grid system using a simple syntax:
-
-- **Breakpoints**: Define max-widths (e.g., `1200=+l|Large`). The `+` indicates the default breakpoint.
-- **Aspect Ratios**: Define ratios like `16:9=+landscape`.
-- **Column Widths**: Define grid fractions (e.g., `1-2` for 50% width).
-
-## Usage
-
-### 1. Standard Resizing
-
-You can use standard ProcessWire API methods. The module intercepts them to use Intervention Image.
+### `Pageimage` & `Page` Hook Methods
 
 ```php
-// Returns a Pageimage object (delayed render)
-$thumb = $page->image->size(800, 600);
-echo $thumb->url;
-```
+<?php
 
-### 2. Using Pre-defined Sizes (Recommended)
+declare(strict_types=1);
 
-The module registers image sizes based on your configuration. You can render a complete `<img>` tag with `srcset` and `sizes` attributes automatically.
+namespace ProcessWire;
 
-```php
-// Render a 'landscape' image at the default breakpoint
-echo $page->image->render('landscape');
+/** @var Pageimage $image */
+/** @var Page $page */
 
-// Render a 'portrait' image taking up half the grid width (1/2)
-echo $page->image->render('portrait-1-2');
-```
-
-### 3. Custom Options
-
-You can pass an array of options to the render method:
-
-```php
-echo $page->image->render('landscape', [
-    'class' => 'img-fluid shadow', // CSS classes
-    'loading' => 'eager',          // 'lazy' (default) or 'eager'
-    'decoding' => 'sync',          // 'async' (default) or 'sync'
-    'quality' => 90,               // Override quality
-    'sharpening' => 'medium',      // 'none', 'soft', 'medium', 'strong'
+// Geometry, Crop, Contain & Watermark
+$sized = $image->size(800, 600, [
+	'cropping' => 'center',     // true|'center'|false|'contain'|'north'|'southeast'|'x100y200'|[100, 200]
+	'trim' => 10,               // Trim uniform borders (0..100)
+	'sharpening' => 'medium',   // 'none'|'soft'|'medium'|'strong' (or numeric 'sharpen' => 0..100)
+	'blur' => 5,                // Gaussian blur (0..100)
+	'brightness' => 10,         // Brightness (-100..100)
+	'contrast' => 10,           // Contrast (-100..100)
+	'gamma' => 1.2,             // Gamma (0.1..10.0)
+	'colorize' => [20, -10, 0], // RGB channel shift (-100..100)
+	'grayscale' => true,        // Grayscale conversion
+	'invert' => false,          // Color inversion
+	'pixelate' => 4,            // Pixelation block size
+	'reduceColors' => 64,       // Palette reduction (1..256)
+	'modifiers' => [            // Custom Intervention Image v4.4 ModifierInterface or typed closures
+		static fn(\Intervention\Image\Interfaces\ImageInterface $img): \Intervention\Image\Interfaces\ImageInterface => $img->sharpen(15),
+	],
 ]);
+
+$cropped = $image->crop(100, 50, 600, 400, ['format' => 'webp']);
+$contained = $image->contain(800, 600, 'ffffff');
+$watermarked = $image->watermark($logoPageimage, 'bottom-right', 50, 15, 15, 1200, 800);
+
+// Responsive HTML & LQIP
+$html = $image->render('landscape', ['loading' => 'lazy']);
+$attrs = $image->attrs(800, 600, ['decoding' => 'async']);
+$srcset = $image->srcset('landscape');
+$lqipDataUri = $image->lqip();
+
+// Visual Color Analysis (cached in {basename}.colors.json)
+$dominant = $image->dominantColor(true);
+$palette = $image->palette(6, true);
+$theme = $image->colorTheme(true);
+
+// Perceptual ImageHash & Similarity (cached in {basename}.hashes.json)
+// Strategies: 'dhash' (default, 64-bit), 'phash' (64-bit), 'ahash' (64-bit), 'bhash' (256-bit)
+$hash = $image->imageHash('dhash');
+$distance = $image->hashDistance($otherPageimage, 'dhash');
+$isDuplicate = $image->isSimilar($otherPageimage, 5, 'dhash');
+
+// Variation & Sidecar Cleanup
+$pageStats = $page->clearImageVariations(['dryRun' => false]);
 ```
 
-### Advanced Image Options
+### Module Programmatic API
 
-You can pass several other image manipulation options during generation:
+See [API.md](API.md) for the complete reference of `InterventionImage` public methods (`manager()`, `calculate()`, `inspectQueue()`, `processQueue()`, `processQueueFile()`, `clearVariations()`, `resolveTargetDirectory()`), and [GLOSSARY.md](GLOSSARY.md) for domain terminology.
 
-```php
-echo $page->image->render('landscape', [
-    'trim' => 10,                 // Trim border whitespace with tolerance (0-100)
-    'cropping' => 'contain',      // Fit inside box without cropping (uses contain / containDown)
-    'background' => 'ffffff',     // Canvas or transparent fill color
-    'blur' => 10,                 // Apply gaussian blur
-    'pixelate' => 5,              // Pixelate the image
-    'brightness' => 15,           // Adjust brightness
-    'contrast' => 10,             // Adjust contrast
-    'colorize' => '255, 0, 0',    // Or as array [255, 0, 0] / ['red' => 255]
-    'grayscale' => true,          // Convert to grayscale
-    'invert' => true,             // Invert colors
-    'reduceColors' => 64,         // Reduce color palette (1-256)
-    'strip' => true,              // Strip EXIF/metadata
-    'progressive' => true,        // Progressive JPEG / interlaced PNG
-    'modifiers' => [              // Custom Intervention Image v4.4 ModifierInterface or closures
-        static fn(\Intervention\Image\Interfaces\ImageInterface $img) => $img->sharpen(15),
-    ],
-]);
-```
+## CLI / MCP Integration
 
-### ProcessWire `Pageimage` Hook Methods
-
-In addition to `size()`, `crop()`, `render()`, `attrs()`, and `srcset()`, the module attaches the following hook methods to `Pageimage`:
-
-```php
-// 1. Fit image inside dimensions without cropping (contain / containDown)
-$contained = $page->image->contain(800, 600, 'ffffff');
-
-// 2. Apply a watermark image (Pageimage or path)
-$watermarked = $page->image->watermark($logoPageimage, 'bottom-right', opacity: 50, offsetX: 15, offsetY: 15);
-
-// 3. Get compact Base64 WebP Data URI placeholder (LQIP)
-$dataUri = $page->image->lqip();
-
-// 4. Extract dominant hex color (e.g. "#1e3a5f")
-$hex = $page->image->dominantColor();
-
-// 5. Extract dominant color palette (e.g. ["#1e3a5f", "#38bdf8", ...])
-$palette = $page->image->palette(6);
-
-// 6. Extract Vibrant / Muted color theme swatches
-$theme = $page->image->colorTheme();
-// ['vibrant' => '#...', 'muted' => '#...', 'darkVibrant' => '#...', 'darkMuted' => '#...', 'lightVibrant' => '#...', 'lightMuted' => '#...']
-
-// 7. Clear all variations & caches (.lqip.webp, .colors.json, .queue) for a specific Page
-$stats = $page->clearImageVariations();
-
-// 8. Clear all variations & caches site-wide (or pass a Page, ID, or path)
-$stats = $modules->get('InterventionImage')->clearVariations();
-```
-
-### Watermark (`insert`) Option
-
-You can also pass `insert` via options during `size()` or `render()`:
-
-```php
-echo $page->image->render('landscape', [
-    'insert' => [
-        'element' => '/path/to/watermark.png', // Absolute path or Pageimage object
-        'position' => 'bottom-right',          // Alignment (e.g. top-left, center, bottom-right)
-        'offset_x' => 15,                      // X axis offset
-        'offset_y' => 15,                      // Y axis offset
-        'opacity' => 50                        // Opacity level (0-100)
-    ]
-]);
-```
-
-### 4. Delayed Rendering Logic
-
-When you request an image size, the module:
-
-1.  Calculates the dimensions.
-2.  Returns a URL to the file path.
-3.  If the file doesn't exist, it creates a lightweight `.queue` JSON file.
-4.  When the browser requests the image URL, ProcessWire's 404 handler intercepts the request, reads the queue file, generates the image on the fly, and serves it.
-
-This prevents the server from hanging while generating dozens of thumbnails during a page save or initial render.
-
-## Advanced: Srcset & Sizes
-
-The module automatically calculates `srcset` based on the configured **Factors** (default: `0.5, 1, 1.5, 2`).
-
-For a 1000px image, it generates variants at:
-
-- 500px (0.5x)
-- 1000px (1x)
-- 1500px (1.5x)
-- 2000px (2x)
-
-This ensures crisp images on High-DPI (Retina) displays.
-
-```php
-// Get just the srcset string
-$srcset = $page->image->srcset('landscape');
-```
-
-## ProcessWire Console & Boost Integration
-
-This module includes first-class support for [`trk/processwire-console`](https://github.com/trk/processwire-console) and [`trk/processwire-boost`](https://github.com/trk/processwire-boost).
-
-### CLI Commands (`vendor/bin/wire`)
-
-When `trk/processwire-console` is installed, the module automatically registers the `image:queue` and `image:clear` commands:
+When `trk/processwire-console` is installed, the module registers `image:queue` and `image:clear`:
 
 ```bash
-# Inspect pending delayed (.queue) variations
+# Inspect pending delayed (.queue) variations globally or for a specific page
 php vendor/bin/wire image:queue --status
+php vendor/bin/wire image:queue --status --page=1024
 
-# Process up to 50 pending delayed variations via CLI / cron
+# Process up to 50 pending .queue variations in batch (ideal for cron / libvips CLI workers)
 php vendor/bin/wire image:queue --limit=50
+php vendor/bin/wire image:queue --limit=50 --page=/products/
 
-# Remove pending .queue files without rendering
+# Clear pending .queue files without generating variations
 php vendor/bin/wire image:queue --clear
 
-# Preview or remove generated variations, .lqip.webp, .colors.json, and .queue files
+# Preview or delete variations and sidecar caches (.lqip.webp, .colors.json, .hashes.json, .queue)
 php vendor/bin/wire image:clear --dry-run
 php vendor/bin/wire image:clear --page=1024
+php vendor/bin/wire image:clear --variations-only
 php vendor/bin/wire image:clear --lqip-only
 php vendor/bin/wire image:clear --colors-only
+php vendor/bin/wire image:clear --hashes-only
+php vendor/bin/wire image:clear --queue-only
+
+# Run the module's automated Pest test suite
+php vendor/bin/wire test site/modules/InterventionImage/tests
 ```
 
-### Automated Tests (`tests/`)
+## Security & Permissions
 
-Run the module's Unit and Feature test suite via Pest:
-
-```bash
-php vendor/bin/wire test
-```
-
-### AI Agent Skill (`pw-intervention-image`)
-
-When `trk/processwire-boost` is installed, `AGENTS.md` and `.agents/skills/pw-intervention-image/SKILL.md` are automatically discovered and synced to your AI coding assistant.
-
+- **Selector Sanitization:** Page path filters passed to `clearVariations()`, `inspectQueue()`, `processQueue()`, or CLI `--page` options are sanitized via `$sanitizer->selectorValue()` inside `resolveTargetDirectory()`.
+- **Atomic Sidecar Persistence:** All sidecar caches (`.queue`, `.colors.json`, `.hashes.json`) are written through `$files->filePutContents(..., LOCK_EX)` to prevent race conditions during concurrent HTTP or CLI requests.
+- **EXIF / Metadata Stripping:** When `strip` is enabled (default), EXIF/GPS metadata is stripped from generated variations during encoding.

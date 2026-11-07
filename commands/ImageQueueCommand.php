@@ -38,102 +38,50 @@ final class ImageQueueCommand extends Command
 
 		/** @var InterventionImage $module */
 		$module = $modules->get('InterventionImage');
-		$config = wire('config');
-		$files = wire('files');
 
-		$baseDir = rtrim($config->paths->files, '/\\');
 		$pageFilter = $input->getOption('page');
-		if ($pageFilter !== null && $pageFilter !== '') {
-			$page = is_numeric($pageFilter)
-				? wire('pages')->get((int) $pageFilter)
-				: wire('pages')->get((string) $pageFilter);
+		$pageArg = ($pageFilter !== null && $pageFilter !== '') ? (string) $pageFilter : null;
+		$limit = max(1, (int) $input->getOption('limit'));
 
-			if (!$page || !$page->id) {
-				error("Page not found for filter: {$pageFilter}");
-				return Command::FAILURE;
-			}
-			$baseDir = rtrim($page->filesManager()->path(), '/\\');
+		try {
+			$inspection = $module->inspectQueue($pageArg, $limit);
+		} catch (\InvalidArgumentException $e) {
+			error($e->getMessage());
+			return Command::FAILURE;
 		}
 
-		if (!is_dir($baseDir)) {
-			info('No files directory found to scan.');
-			return Command::SUCCESS;
-		}
-
-		$queueFiles = $this->findQueueFiles($baseDir);
-		$total = count($queueFiles);
-
-		if ($total === 0) {
+		if ($inspection['total'] === 0) {
 			info('No pending .queue variations found.');
 			return Command::SUCCESS;
 		}
 
 		if ((bool) $input->getOption('status')) {
-			$rows = [];
-			foreach (array_slice($queueFiles, 0, 50) as $qFile) {
-				$data = json_decode((string) file_get_contents($qFile), true) ?: [];
-				$rows[] = [
-					str_replace($config->paths->files, '', substr($qFile, 0, -6)),
-					($data['width'] ?? 0) . 'x' . ($data['height'] ?? 0),
-					(string) ($data['source'] ?? ''),
-				];
-			}
+			$rows = array_map(
+				static fn(array $item): array => [
+					$item['target'],
+					$item['dimensions'],
+					$item['source'],
+				],
+				$inspection['items']
+			);
 			table(['Target Variation', 'Dimensions', 'Source'], $rows);
-			note("Total pending queue files: {$total}");
+			note("Total pending queue files: {$inspection['total']}");
 			return Command::SUCCESS;
 		}
 
 		if ((bool) $input->getOption('clear')) {
-			$removed = 0;
-			foreach ($queueFiles as $qFile) {
-				if ($files->unlink($qFile)) {
-					$removed++;
-				}
-			}
-			info("Cleared {$removed} pending .queue file(s).");
+			$counts = $module->clearVariations($pageArg, ['queue' => true]);
+			info("Cleared {$counts['queue']} pending .queue file(s).");
 			return Command::SUCCESS;
 		}
 
-		$limit = max(1, (int) $input->getOption('limit'));
-		$batch = array_slice($queueFiles, 0, $limit);
-		$processed = 0;
-		$failed = 0;
-
-		foreach ($batch as $qFile) {
-			try {
-				$module->processQueueFile($qFile);
-				$processed++;
-			} catch (\Throwable $e) {
-				$failed++;
-				error('Failed: ' . basename($qFile) . ' — ' . $e->getMessage());
-			}
+		$result = $module->processQueue($pageArg, $limit);
+		foreach ($result['errors'] as $errMessage) {
+			error("Failed: {$errMessage}");
 		}
 
-		$remaining = max(0, $total - count($batch));
-		info("Processed {$processed} queued variation(s) ({$failed} failed, {$remaining} remaining).");
+		info("Processed {$result['processed']} queued variation(s) ({$result['failed']} failed, {$result['remaining']} remaining).");
 
-		return $failed > 0 ? Command::FAILURE : Command::SUCCESS;
-	}
-
-	/**
-	 * @param string $directory
-	 * @return list<string>
-	 */
-	private function findQueueFiles(string $directory): array
-	{
-		$found = [];
-		$iterator = new \RecursiveIteratorIterator(
-			new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS)
-		);
-
-		/** @var \SplFileInfo $fileInfo */
-		foreach ($iterator as $fileInfo) {
-			if ($fileInfo->isFile() && str_ends_with($fileInfo->getFilename(), '.queue')) {
-				$found[] = $fileInfo->getPathname();
-			}
-		}
-
-		sort($found);
-		return $found;
+		return $result['failed'] > 0 ? Command::FAILURE : Command::SUCCESS;
 	}
 }
