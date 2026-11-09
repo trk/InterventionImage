@@ -27,10 +27,6 @@ use Intervention\ImageHash\Strategies\BlockStrategy;
 use Intervention\ImageHash\Strategies\DifferenceStrategy;
 use Intervention\ImageHash\Strategies\PerceptualStrategy;
 
-if (!class_exists(ImageManager::class) || !class_exists(VipsDriver::class) || !class_exists(Hash::class)) {
-    require __DIR__ . '/vendor/autoload.php';
-}
-
 /**
  * InterventionImageEngine for ProcessWire
  * 
@@ -117,6 +113,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     public function __construct()
     {
         parent::__construct();
+        require_once __DIR__ . '/vendor/autoload.php';
         foreach ($this->defaults as $key => $value) {
             $this->set($key, $value);
         }
@@ -1546,7 +1543,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $image = $event->object;
         $prefix = (bool) ($event->arguments(0) ?? true);
 
-        $meta = $this->extractColorMetadata($image);
+        $meta = $this->extractColorMetadata($image, 1);
         $hex = $meta['dominant'] ?? '';
         if ($hex === '') {
             $event->return = '';
@@ -1588,7 +1585,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $image = $event->object;
         $prefix = (bool) ($event->arguments(0) ?? true);
 
-        $meta = $this->extractColorMetadata($image);
+        $meta = $this->extractColorMetadata($image, 1);
         $theme = $meta['theme'] ?? [];
 
         $formatted = [];
@@ -1616,9 +1613,15 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             return ['dominant' => '', 'palette' => [], 'theme' => []];
         }
 
+        $requestedLimit = max(8, $paletteLimit);
         $cachePath = $this->getSidecarPath($source, '.colors.json');
         $cached = $this->readSidecarJson($cachePath);
-        if (is_array($cached) && isset($cached['dominant'], $cached['palette'], $cached['theme']) && count($cached['palette']) >= $paletteLimit) {
+        if (
+            is_array($cached)
+            && isset($cached['dominant'], $cached['palette'], $cached['theme'])
+            && is_array($cached['palette'])
+            && (count($cached['palette']) >= $paletteLimit || (int) ($cached['limit'] ?? 8) >= $paletteLimit)
+        ) {
             /** @var array{dominant: string, palette: list<string>, theme: array<string, ?string>} $cached */
             return $cached;
         }
@@ -1627,7 +1630,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $sample = $this->intervention->decodePath($source->filename)->scaleDown(width: 32, height: 32);
             $extractor = $sample->colors();
 
-            $dominantPalette = $extractor->dominant(max(8, $paletteLimit));
+            $dominantPalette = $extractor->dominant($requestedLimit);
             $paletteHex = array_values(array_map(
                 static fn(ColorInterface $color): string => $color->toHex(false),
                 $dominantPalette->toArray()
@@ -1648,6 +1651,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
                 'dominant' => $paletteHex[0] ?? '',
                 'palette' => $paletteHex,
                 'theme' => $themeMap,
+                'limit' => $requestedLimit,
             ];
 
             $this->writeSidecarJson($cachePath, $data);
