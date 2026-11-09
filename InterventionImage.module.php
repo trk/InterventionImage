@@ -98,7 +98,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     {
         return [
             'title' => __('Intervention Image Engine'),
-            'version' => 120,
+            'version' => 121,
             'summary' => __('Replaces PW sizing with Intervention Image v4.4 (GD, Imagick, libvips) + Delayed Rendering + Perceptual ImageHash.'),
             'author' => 'Iskender TOTOGLU @trk @ukyo',
             'href' => 'https://github.com/trk/InterventionImage',
