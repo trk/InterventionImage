@@ -290,3 +290,73 @@ test('clearVariations and Page::clearImageVariations support global and per-page
 	}
 });
 
+test('handlePageNotFound and processQueueFile enforce path containment, reject traversal, and respect pagefileSecure', function (): void {
+	/** @var InterventionImage $module */
+	$module = wire('modules')->get('InterventionImage');
+	$config = wire('config');
+	$files = wire('files');
+
+	$rootFilesDir = rtrim((string) $config->paths->files, '/') . '/1/';
+	if (!is_dir($rootFilesDir)) {
+		$files->mkdir($rootFilesDir, true);
+	}
+
+	// 1. processQueueFile rejects traversal and out-of-files-root source paths and unlinks poisoned .queue sidecars
+	$poisonedQueue = $rootFilesDir . 'poisoned_' . uniqid() . '.webp.queue';
+	file_put_contents($poisonedQueue, json_encode([
+		'source' => 'config.php',
+		'width' => 100,
+		'height' => 100,
+		'options' => [],
+	]));
+
+	try {
+		expect($module->processQueueFile($poisonedQueue))->toBeNull()
+			->and(file_exists($poisonedQueue))->toBeFalse();
+
+		expect($module->processQueueFile($rootFilesDir . '../config.php.queue'))->toBeNull();
+	} finally {
+		if (file_exists($poisonedQueue)) {
+			@unlink($poisonedQueue);
+		}
+	}
+
+	// 2. handlePageNotFound ignores URLs where files URL is smuggled in query string, contains '..', or targets pagefileSecure '-' directory
+	$secureDir = rtrim((string) $config->paths->files, '/') . '/-999999/';
+	$files->mkdir($secureDir, true);
+	$secureQueue = $secureDir . 'secret.100x100.webp.queue';
+	file_put_contents($secureQueue, json_encode([
+		'source' => 'assets/files/-999999/secret.jpg',
+		'width' => 100,
+		'height' => 100,
+	]));
+
+	$prevSecure = $config->pagefileSecure;
+	$config->pagefileSecure = true;
+
+	try {
+		$querySmuggleEvent = new \ProcessWire\HookEvent([
+			'object' => wire('process'),
+			'arguments' => [null, '/some-missing-page/?leak=' . $config->urls->files . '1/test.webp'],
+		]);
+		wire($querySmuggleEvent);
+		$module->handlePageNotFound($querySmuggleEvent);
+		expect($querySmuggleEvent->replace)->toBeFalse();
+
+		$secureEvent = new \ProcessWire\HookEvent([
+			'object' => wire('process'),
+			'arguments' => [null, $config->urls->files . '-999999/secret.100x100.webp'],
+		]);
+		wire($secureEvent);
+		$module->handlePageNotFound($secureEvent);
+		expect($secureEvent->replace)->toBeFalse()
+			->and(file_exists($secureQueue))->toBeTrue();
+	} finally {
+		$config->pagefileSecure = $prevSecure;
+		if (file_exists($secureQueue)) {
+			@unlink($secureQueue);
+		}
+		@rmdir($secureDir);
+	}
+});
+

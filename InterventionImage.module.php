@@ -992,7 +992,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     public function handlePageNotFound(HookEvent $event): void
     {
         $url = (string) ($event->arguments(1) ?: ($_SERVER['REQUEST_URI'] ?? ''));
-        if ($url === '') {
+        if ($url === '' || str_contains($url, "\0")) {
             return;
         }
 
@@ -1003,30 +1003,101 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $config = $event->wire()->config;
         $files = $event->wire()->files;
 
-        if (!str_contains($url, $config->urls->files)) {
-            return;
-        }
-
-        $root = rtrim($config->paths->root, '/\\');
         $urlPath = parse_url($url, PHP_URL_PATH);
         if (!is_string($urlPath) || $urlPath === '') {
             return;
         }
-        $rootUrl = $config->urls->root;
-        if ($rootUrl !== '/' && str_starts_with($urlPath, $rootUrl)) {
+
+        $decodedPath = rawurldecode($urlPath);
+        if (
+            str_contains($urlPath, "\0")
+            || str_contains($decodedPath, "\0")
+            || str_contains($urlPath, '..')
+            || str_contains($decodedPath, '..')
+            || str_contains($urlPath, '\\')
+            || str_contains($decodedPath, '\\')
+        ) {
+            return;
+        }
+
+        $rootUrl = (string) $config->urls->root;
+        if ($rootUrl !== '/' && $rootUrl !== '' && str_starts_with($urlPath, $rootUrl)) {
             $urlPath = '/' . ltrim(substr($urlPath, strlen($rootUrl)), '/');
         }
-        $destination = $root . str_replace('/', DIRECTORY_SEPARATOR, $urlPath);
+
+        $filesUrl = (string) $config->urls->files;
+        if ($rootUrl !== '/' && $rootUrl !== '' && str_starts_with($filesUrl, $rootUrl)) {
+            $filesUrl = '/' . ltrim(substr($filesUrl, strlen($rootUrl)), '/');
+        }
+        $filesUrl = '/' . trim($filesUrl, '/') . '/';
+
+        if (!str_starts_with($urlPath, $filesUrl)) {
+            return;
+        }
+
+        $relFilesPath = substr($urlPath, strlen($filesUrl));
+        $segments = explode('/', $relFilesPath);
+        if (count($segments) < 2) {
+            return;
+        }
+
+        $secureActive = (bool) $config->pagefileSecure;
+        $securePrefix = (string) ($config->pagefileSecurePathPrefix ?: '-');
+        $dirSegments = array_slice($segments, 0, -1);
+
+        foreach ($segments as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                return;
+            }
+        }
+
+        if ($secureActive && $securePrefix !== '') {
+            foreach ($dirSegments as $dirSegment) {
+                if (str_starts_with($dirSegment, $securePrefix)) {
+                    return;
+                }
+            }
+        }
+
+        $filesRootReal = realpath((string) $config->paths->files);
+        if ($filesRootReal === false) {
+            return;
+        }
+        $filesRootPrefix = rtrim($filesRootReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+
+        $destination = rtrim((string) $config->paths->files, '/\\') . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relFilesPath);
         $queueFile = $destination . '.queue';
 
         if (!$files->exists($queueFile)) {
             return;
         }
 
+        $queueReal = realpath($queueFile);
+        if ($queueReal === false || !str_starts_with($queueReal, $filesRootPrefix) || !str_ends_with($queueReal, '.queue')) {
+            return;
+        }
+
+        if ($secureActive && $securePrefix !== '') {
+            $relReal = substr($queueReal, strlen($filesRootPrefix));
+            $realDirSegments = array_slice(explode(DIRECTORY_SEPARATOR, $relReal), 0, -1);
+            foreach ($realDirSegments as $realSeg) {
+                if (str_starts_with($realSeg, $securePrefix)) {
+                    return;
+                }
+            }
+        }
+
         try {
-            $encoded = $this->processQueueFile($queueFile);
+            $encoded = $this->processQueueFile($queueReal);
             if ($encoded === null && !file_exists($destination)) {
                 return;
+            }
+
+            if ($encoded === null) {
+                $destReal = realpath($destination);
+                if ($destReal === false || !str_starts_with($destReal, $filesRootPrefix)) {
+                    return;
+                }
             }
 
             $event->replace = true;
@@ -1072,39 +1143,53 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $config = $this->wire()->config;
         $files = $this->wire()->files;
 
-        if (!$files->exists($queueFile)) {
+        if ($queueFile === '' || str_contains($queueFile, "\0") || str_contains($queueFile, '..') || !$files->exists($queueFile)) {
             return null;
         }
 
-        $data = $this->readSidecarJson($queueFile);
+        $filesRootReal = realpath((string) $config->paths->files);
+        $queueReal = realpath($queueFile);
+        if ($filesRootReal === false || $queueReal === false) {
+            return null;
+        }
+        $filesRootPrefix = rtrim($filesRootReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        if (!str_starts_with($queueReal, $filesRootPrefix) || !str_ends_with($queueReal, '.queue')) {
+            return null;
+        }
+
+        $data = $this->readSidecarJson($queueReal);
         if (!is_array($data) || empty($data['source'])) {
-            $files->unlink($queueFile);
+            $files->unlink($queueReal);
             return null;
         }
 
         $rawSource = (string) $data['source'];
+        if (str_contains($rawSource, "\0") || str_contains($rawSource, '..')) {
+            $files->unlink($queueReal);
+            return null;
+        }
+
         $source = $config->paths->site . ltrim($rawSource, '/');
         if (!$files->exists($source) && str_contains($rawSource, 'assets/files/')) {
             $rel = substr($rawSource, (int) strpos($rawSource, 'assets/files/'));
             $source = $config->paths->site . $rel;
         }
-        if (!$files->exists($source)) {
-            $files->unlink($queueFile);
+        $sourceReal = $files->exists($source) ? realpath($source) : false;
+        if ($sourceReal === false || !str_starts_with($sourceReal, $filesRootPrefix)) {
+            $files->unlink($queueReal);
             return null;
         }
 
-        $destination = str_ends_with($queueFile, '.queue')
-            ? substr($queueFile, 0, -6)
-            : $queueFile;
+        $destination = substr($queueReal, 0, -6);
 
         $encoded = $this->create(
-            $source,
+            $sourceReal,
             $destination,
             (int) ($data['width'] ?? 0),
             (int) ($data['height'] ?? 0),
             (array) ($data['options'] ?? [])
         );
-        $files->unlink($queueFile);
+        $files->unlink($queueReal);
 
         return $encoded instanceof EncodedImageInterface ? $encoded : null;
     }
