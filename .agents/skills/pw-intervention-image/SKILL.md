@@ -4,7 +4,7 @@ description: "Use when resizing, cropping, containing, watermarking, extracting 
 risk: safe
 source: processwire-boost
 metadata:
-  version: 120
+  version: 122
   intervention-image-version: "^4.4"
   processwire-version: ">=3.0.271"
   php-version: ">=8.3"
