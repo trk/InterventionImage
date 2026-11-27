@@ -1,10 +1,18 @@
 document.addEventListener("DOMContentLoaded", function () {
+  const markLoaded = (img) => {
+    img.classList.add("loaded");
+    if (img.style.backgroundImage) {
+      img.style.backgroundImage = "";
+      img.style.backgroundSize = "";
+      img.style.backgroundPosition = "";
+    }
+  };
   const lazyImages = document.querySelectorAll("img.lazyload");
   lazyImages.forEach((img) => {
     if (img.complete) {
-      img.classList.add("loaded");
+      markLoaded(img);
     } else {
-      img.addEventListener("load", () => img.classList.add("loaded"));
+      img.addEventListener("load", () => markLoaded(img), { once: true });
     }
   });
 });

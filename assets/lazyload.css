@@ -3,6 +3,7 @@ img.lazyload {
 }
 img.lazyload.loaded {
   animation: lazyFadeIn 0.5s ease-in-out;
+  background-image: none !important;
 }
 
 @keyframes lazyFadeIn {

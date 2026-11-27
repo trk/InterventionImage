@@ -194,6 +194,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             }
             img.lazyload.loaded {
                 animation: lazyFadeIn 0.5s ease-in-out;
+                background-image: none !important;
             }
             @keyframes lazyFadeIn {
                 from {
@@ -209,12 +210,20 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         $output .= <<<HTML
         <script>
             document.addEventListener("DOMContentLoaded", function () {
+                const markLoaded = (img) => {
+                    img.classList.add("loaded");
+                    if (img.style.backgroundImage) {
+                        img.style.backgroundImage = "";
+                        img.style.backgroundSize = "";
+                        img.style.backgroundPosition = "";
+                    }
+                };
                 const lazyloadImages = document.querySelectorAll("img.lazyload");
                 lazyloadImages.forEach((img) => {
                     if (img.complete) {
-                        img.classList.add("loaded");
+                        markLoaded(img);
                     } else {
-                        img.addEventListener("load", () => img.classList.add("loaded"));
+                        img.addEventListener("load", () => markLoaded(img), { once: true });
                     }
                 });
             });
@@ -321,15 +330,15 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             'avifAdd'  => $this->avifAdd,
         ];
 
-        $this->imageSizeOptions = array_merge([
+        $this->imageSizeOptions = array_merge($coreOptions, [
             'delayed' => $this->delayed,
             'upscaling' => $this->upscaling,
             'strip' => $this->strip,
             'progressive' => $this->progressive,
-            'cropping' => 'center',
+            'cropping' => $coreOptions['cropping'] ?? 'center',
             'quality' => $this->quality,
-            'sharpening' => 'soft',
-        ], $coreOptions, $formatOpts);
+            'sharpening' => $coreOptions['sharpening'] ?? 'soft',
+        ], $formatOpts);
 
         $this->imageSizeOptions['webp'] = $config->webpOptions ?: ['quality' => $this->quality];
         $this->imageSizeOptions['avif'] = $config->avifOptions ?: ['quality' => $this->quality];
@@ -359,7 +368,15 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         foreach ($aspectRatios['data'] as $key => $ratio) {
             foreach ($columnWidths as $columnWidth) {
-                [$n, $d] = explode('-', $columnWidth);
+                if (!str_contains($columnWidth, '-')) {
+                    continue;
+                }
+                [$rawN, $rawD] = explode('-', $columnWidth, 2);
+                $n = (float) $rawN;
+                $d = (float) $rawD;
+                if ($n <= 0.0 || $d <= 0.0) {
+                    continue;
+                }
                 $width = (int) ceil($breakpoints['default']['value'] * ($n / $d));
 
                 $dimensions = $this->calculate($width, null, $key);
@@ -627,6 +644,96 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
     }
 
     /**
+     * Fast binary header check to determine whether the source image contains an alpha/transparency channel.
+     */
+    protected function hasAlphaChannel(Pageimage $image): bool
+    {
+        $source = $image->getOriginal() ?: $image;
+        $ext = strtolower($source->ext);
+
+        if ($ext === 'jpg' || $ext === 'jpeg') {
+            return false;
+        }
+
+        if ($ext === 'gif' || $ext === 'svg') {
+            return true;
+        }
+
+        if (!is_string($source->filename) || !is_file($source->filename)) {
+            return false;
+        }
+
+        $fp = @fopen($source->filename, 'rb');
+        if ($fp === false) {
+            return false;
+        }
+
+        $header = (string) fread($fp, 64);
+
+        if ($ext === 'png' && strlen($header) >= 26 && str_starts_with($header, "\x89PNG\r\n\x1a\n")) {
+            $colorType = ord($header[25]);
+            if ($colorType === 4 || $colorType === 6) {
+                fclose($fp);
+                return true;
+            }
+            $chunkScan = $header . (string) fread($fp, 4032);
+            fclose($fp);
+            $idatPos = strpos($chunkScan, 'IDAT');
+            $trnsPos = strpos($chunkScan, 'tRNS');
+            return $trnsPos !== false && ($idatPos === false || $trnsPos < $idatPos);
+        }
+
+        if ($ext === 'avif') {
+            $avifScan = $header . (string) fread($fp, 2048);
+            fclose($fp);
+            return str_contains($avifScan, 'auxiliary:alpha');
+        }
+
+        fclose($fp);
+
+        if ($ext === 'webp' && strlen($header) >= 25 && substr($header, 0, 4) === 'RIFF' && substr($header, 8, 4) === 'WEBP') {
+            $chunk = substr($header, 12, 4);
+            if ($chunk === 'VP8X') {
+                return (ord($header[20]) & 0x10) !== 0;
+            }
+            if ($chunk === 'VP8L') {
+                return (ord($header[24]) & 0x10) !== 0;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Resolves physical variation dimensions without exceeding original image bounds when upscaling is disabled.
+     *
+     * @return array{0: int, 1: int}
+     */
+    protected function resolveRenderDimensions(int $width, int $height, int $origW, int $origH, bool $upscale): array
+    {
+        if ($upscale || ($width <= $origW && $height <= $origH)) {
+            return [$width, $height];
+        }
+
+        $targetRatio = $width / max(1, $height);
+        $origRatio = $origW / max(1, $origH);
+
+        if (abs($targetRatio - $origRatio) < 0.02) {
+            return [$origW, $origH];
+        }
+
+        if ($origRatio >= $targetRatio) {
+            $renderH = min($height, $origH);
+            $renderW = max(1, (int) round($renderH * $targetRatio));
+        } else {
+            $renderW = min($width, $origW);
+            $renderH = max(1, (int) round($renderW / $targetRatio));
+        }
+
+        return [$renderW, $renderH];
+    }
+
+    /**
      * Maps ProcessWire cropping strings to Intervention v4.4 Alignment enum cases.
      * 
      * @param string|bool|Alignment $crop
@@ -798,36 +905,44 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         $variations = [];
         $factors = $this->formatted['factors'] ?? [0.5, 1, 1.5, 2];
+        $upscale = !empty($parameters['options']['upscaling']) || (bool) $this->upscaling;
 
-        $threshold = 150;
+        $threshold = min(150, (int) round($origW * 0.15));
         $targetRatio = ($baseH > 0) ? ($baseW / $baseH) : ($origW / $origH);
 
         foreach ($factors as $factor) {
             $f = (float) $factor;
-            $w = (int) ($baseW * $f);
-
-            if ($w >= ($origW - $threshold)) {
-                $w = $origW;
+            if ($f < 1.0 && $baseW <= 320) {
+                continue;
             }
 
-            if ($w === $origW) {
-                $origRatio = $origW / $origH;
-                if (abs($targetRatio - $origRatio) < 0.01) {
-                    $h = $origH;
-                } else {
-                    $h = (int) round($w / $targetRatio);
-                }
-            } else {
-                $h = (int) round($w / $targetRatio);
+            $w = max(1, (int) round($baseW * $f));
+            $h = max(1, (int) round($w / $targetRatio));
+
+            if (!$upscale && ($w >= ($origW - $threshold) || $h > $origH)) {
+                [$w, $h] = $this->resolveRenderDimensions($w, $h, $origW, $origH, false);
             }
+
             $variations[$w] = $h;
+        }
+
+        if (
+            empty($parameters['options']['format'])
+            && isset($parameters['options']['renderWidth'])
+            && count($variations) <= 1
+            && (empty($variations) || array_key_first($variations) === (int) $parameters['options']['renderWidth'])
+        ) {
+            $event->return = '';
+            return;
         }
 
         ksort($variations);
         $srcset = [];
+        $sizeOptions = $parameters['options'];
+        unset($sizeOptions['baseWidth'], $sizeOptions['baseHeight'], $sizeOptions['renderWidth'], $sizeOptions['renderHeight']);
 
         foreach ($variations as $w => $h) {
-            $srcset[] = $image->size($w, $h, $parameters['options'])->url . " {$w}w";
+            $srcset[] = $image->size($w, $h, $sizeOptions)->url . " {$w}w";
         }
 
         $event->return = implode(', ', array_unique($srcset));
@@ -863,28 +978,41 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $height = (int) round($width * ($origH / $origW));
         }
 
-        $isSvg = $this->isSvg($image);
-        $source = $isSvg ? $image : $image->size($width, $height, $options);
+        $upscale = !empty($options['upscaling']) || (bool) $this->upscaling;
+        [$renderW, $renderH] = $this->resolveRenderDimensions($width, $height, $origW, $origH, $upscale);
 
-        $srcsetOptions = array_merge($options, ['baseWidth' => $width, 'baseHeight' => $height]);
+        $isSvg = $this->isSvg($image);
+        $source = $isSvg ? $image : $image->size($renderW, $renderH, $options);
+
+        $srcsetOptions = array_merge($options, [
+            'baseWidth' => $width,
+            'baseHeight' => $height,
+            'renderWidth' => $renderW,
+            'renderHeight' => $renderH,
+        ]);
 
         $sources = [];
         if (!$isSvg) {
             // AVIF Source
             if ($this->avifAdd && $source->ext !== 'avif') {
-                $sources[] = [
-                    'type' => 'image/avif',
-                    'srcset' => $image->srcset(null, array_merge($srcsetOptions, ['format' => 'avif'])),
-                ];
+                $avifSrcset = $image->srcset(null, array_merge($srcsetOptions, ['format' => 'avif']));
+                if ($avifSrcset !== '') {
+                    $sources[] = [
+                        'type' => 'image/avif',
+                        'srcset' => $avifSrcset,
+                    ];
+                }
             }
 
             // WebP Source
             if ($this->webpAdd && $source->ext !== 'webp') {
                 $webpSrcset = $image->srcset(null, array_merge($srcsetOptions, ['format' => 'webp']));
-                $sources[] = [
-                    'type' => 'image/webp',
-                    'srcset' => $webpSrcset,
-                ];
+                if ($webpSrcset !== '') {
+                    $sources[] = [
+                        'type' => 'image/webp',
+                        'srcset' => $webpSrcset,
+                    ];
+                }
             }
         }
 
@@ -897,15 +1025,18 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $lazyload = (bool) $this->lazyload;
         }
         $first = !empty($options['isFirst']);
+        $srcset = $isSvg ? '' : $image->srcset(null, $srcsetOptions);
 
         $attrs = [
             'src' => $source->url,
             'width' => $width,
             'height' => $height,
             'alt' => $image->description ?: pathinfo($image->basename, PATHINFO_FILENAME),
-            'srcset' => $isSvg ? '' : $image->srcset(null, $srcsetOptions),
+            'srcset' => $srcset,
             'sources' => $sources,
-            'sizes' => $isSvg ? '' : ($options['sizes'] ?? sprintf('(max-width: %dpx) 100vw, %dpx', $width, $width)),
+            'sizes' => ($isSvg || ($srcset === '' && empty($sources)))
+                ? ''
+                : ($options['sizes'] ?? sprintf('(max-width: %dpx) 100vw, %dpx', $width, $width)),
         ];
 
         // set class, style as array
@@ -920,7 +1051,11 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $attrs['class'][] = 'lazyload';
         }
 
-        if ($this->lqip && !$isSvg) {
+        $enableLqip = array_key_exists('lqip', $options) ? (bool) $options['lqip'] : (bool) $this->lqip;
+        $explicitLqip = array_key_exists('lqip', $options) && $options['lqip'] === true;
+        $isSmallGraphic = !$explicitLqip && ($width < 150 || $height < 150);
+
+        if ($enableLqip && !$isSvg && !$isSmallGraphic && !$this->hasAlphaChannel($image)) {
             $base64 = $this->generateLqip($image);
             if ($base64 !== '') {
                 if (!in_array('lazyload', $attrs['class'], true)) {
