@@ -57,8 +57,8 @@ use Intervention\ImageHash\Strategies\PerceptualStrategy;
  */
 class InterventionImage extends WireData implements Module, ConfigurableModule
 {
-    /** @var ImageManager Intervention image manager instance */
-    protected ImageManager $intervention;
+    /** @var ImageManager|null Intervention image manager instance */
+    protected ?ImageManager $intervention = null;
 
     /** @var array Merged image sizer options from ProcessWire config */
     protected array $imageSizeOptions;
@@ -142,13 +142,12 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             $this->set($internal, in_array($opt, $enabledOptions, true));
         }
 
-        $this->setupIntervention();
         $this->setupImageOptions();
         $this->parseAndSetupConfigs();
 
         if ($this->inlineLazyload) {
             $this->addHookAfter('Page::render', function (HookEvent $event): void {
-                if ($event->wire()->config->admin || !is_string($event->return)) {
+                if ($event->wire()->config->admin || !is_string($event->return) || !str_contains($event->return, 'lazyload')) {
                     return;
                 }
                 $event->return = str_replace('</head>', $this->inlineLazyload() . '</head>', $event->return);
@@ -298,6 +297,10 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     public function manager(): ImageManager
     {
+        if ($this->intervention === null) {
+            $this->setupIntervention();
+        }
+
         return $this->intervention;
     }
 
@@ -1712,7 +1715,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         try {
-            $sample = $this->intervention->decodePath($source->filename)->scaleDown(width: 32, height: 32);
+            $sample = $this->manager()->decodePath($source->filename)->scaleDown(width: 32, height: 32);
             $extractor = $sample->colors();
 
             $dominantPalette = $extractor->dominant($requestedLimit);
@@ -1859,7 +1862,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         }
 
         try {
-            $hashResult = $this->intervention
+            $hashResult = $this->manager()
                 ->decodePath($source->filename)
                 ->analyze($resolved['analyzer']);
 
@@ -1909,7 +1912,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
         if (is_file($target) && filesize($target) > 0) {
             $resolved = $this->resolveHashStrategy($strategy);
             try {
-                $result = $this->intervention->decodePath($target)->analyze($resolved['analyzer']);
+                $result = $this->manager()->decodePath($target)->analyze($resolved['analyzer']);
                 return $result instanceof Hash ? $result : Hash::fromHex((string) $result);
             } catch (\Throwable) {
                 return null;
@@ -1962,7 +1965,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
 
         if (!file_exists($lqipPath)) {
             try {
-                $encoded = $this->intervention->decodePath($source->filename)
+                $encoded = $this->manager()->decodePath($source->filename)
                     ->scaleDown(width: 24)
                     ->blur(2)
                     ->encodeUsingFormat(Format::WEBP, quality: 20, strip: true);
@@ -2054,7 +2057,7 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
             throw new \RuntimeException('InterventionImage: Source file not found: ' . $filename);
         }
 
-        $image = $this->intervention->decodePath($filename);
+        $image = $this->manager()->decodePath($filename);
 
         // 1. Pre-Resize Transformations (Trim / Rotate / Flip)
         if (isset($options['trim']) && $options['trim'] !== false) {
@@ -2325,8 +2328,13 @@ class InterventionImage extends WireData implements Module, ConfigurableModule
      */
     protected function createQueue(Pageimage $source, string $destPath, array $params): void
     {
+        $queuePath = $destPath . '.queue';
+        if (is_file($queuePath)) {
+            return;
+        }
+
         $src = str_replace($this->wire()->config->paths->site, '', $source->filename);
-        $this->writeSidecarJson($destPath . '.queue', [
+        $this->writeSidecarJson($queuePath, [
             'source' => $src,
             'width' => $params['width'],
             'height' => $params['height'],
